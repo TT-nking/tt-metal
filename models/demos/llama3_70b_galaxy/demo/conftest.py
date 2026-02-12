@@ -33,8 +33,9 @@ def galaxy_type():
 
 
 # Default device params matching text_demo.py parametrize (single value)
+# trace_region_size: larger value for prefill benchmark (trace capture with prefix caching)
 TEXT_DEMO_DEVICE_PARAMS = {
-    "trace_region_size": 184915840,
+    "trace_region_size": 369831680,  # 2x 184915840 for test_prefill_prefix_caching_benchmark
     "num_command_queues": 1,
     "dispatch_core_axis": None,  # set below with ttnn
     "worker_l1_size": 1345000,
