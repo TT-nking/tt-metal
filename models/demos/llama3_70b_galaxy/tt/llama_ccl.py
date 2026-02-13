@@ -498,6 +498,7 @@ class TT_CCL:
                     "FF1": [(1, 1, seqlen, 3584), (1, 1, seqlen, 3584 // 4)],
                     "FF3": [(1, 1, seqlen, 3584), (1, 1, seqlen, 3584 // 4)],
                     "FF2": [(1, 1, seqlen, 2048), (1, 1, seqlen, 2048 // 8)],
+                    "ATTN_REPLICATE": [(1, 1, seqlen, 128), (1, 1, seqlen, 128 // 4)],
                 }
                 if not self.is_qwen
                 else {
@@ -506,6 +507,7 @@ class TT_CCL:
                     "FF1": [(1, 1, seqlen, 3200), (1, 1, seqlen, 3200 // 4)],
                     "FF3": [(1, 1, seqlen, 3200), (1, 1, seqlen, 3200 // 4)],
                     "FF2": [(1, 1, seqlen, 1280), (1, 1, seqlen, 1280 // 8)],
+                    "ATTN_REPLICATE": [(1, 1, seqlen, 128), (1, 1, seqlen, 128 // 4)],
                 }
             )
             for key, shape in buffers_dict.items():
@@ -567,6 +569,7 @@ class TT_CCL:
                     "FF1": [(1, 1, seqlen, 3584), (1, 1, seqlen, 3584 // 4)],
                     "FF3": [(1, 1, seqlen, 3584), (1, 1, seqlen, 3584 // 4)],
                     "FF2": [(1, 1, seqlen, 2048), (1, 1, seqlen, 2048 // 8)],
+                    "ATTN_REPLICATE": [(1, 1, seqlen, 128), (1, 1, seqlen, 128 // 4)],
                     "QKV_batched": [(1, 32, seqlen // 32, 1280), (1, 32, seqlen // 32, 1280 // 4)],
                     # "WO_batched": [(1, 32, seqlen // 32, 2048), (1, 32, seqlen // 32, 2048 // 8)],
                     "FF1_batched": [(1, 32, seqlen // 32, 3584), (1, 32, seqlen // 32, 3584 // 4)],
@@ -580,6 +583,7 @@ class TT_CCL:
                     "FF1": [(1, 1, seqlen, 3200), (1, 1, seqlen, 3200 // 4)],
                     "FF3": [(1, 1, seqlen, 3200), (1, 1, seqlen, 3200 // 4)],
                     "FF2": [(1, 1, seqlen, 1280), (1, 1, seqlen, 1280 // 8)],
+                    "ATTN_REPLICATE": [(1, 1, seqlen, 128), (1, 1, seqlen, 128 // 4)],
                     "QKV_batched": [(1, 32, seqlen // 32, 1280), (1, 32, seqlen // 32, 1280 // 4)],
                     # "WO_batched": [(1, 32, seqlen // 32, 1280), (1, 32, seqlen // 32, 1280 // 8)],
                     "FF1_batched": [(1, 32, seqlen // 32, 3200), (1, 32, seqlen // 32, 3200 // 4)],

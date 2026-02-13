@@ -25,7 +25,7 @@ from models.common.llama_models import (
 
 from models.common.sampling import SamplingParams, format_sampling_params
 from models.common.warmup import WarmupForwardMixin
-
+from models.demos.llama3_70b_galaxy.tt.model_config import SDPA_CHUNK_ALIGN
 
 def get_padded_prefill_len(seq_len: int) -> int:
     """
@@ -39,6 +39,55 @@ def get_padded_prefill_len(seq_len: int) -> int:
     else:
         # return next power of 2 greater than seq_len
         return 2 ** (seq_len - 1).bit_length()
+
+
+def _should_skip_prefix_caching(
+    seq_len: int,  # Full sequence length including cached tokens
+    num_cached: int,  # Number of cached tokens
+) -> bool:
+    """Decide whether prefix-caching overhead exceeds compute savings.
+
+    Returns True when reprocessing all tokens (ignoring the cached prefix)
+    is expected to be faster.  In that case the caller should set
+    num_cached_tokens = 0 so the regular ring-SDPA path is used.
+
+    The heuristic compares the *padded* new-token length with the *padded*
+    total length.  Because get_padded_prefill_len rounds aggressively
+    (everything ≤ 1024 → 1024, then powers of 2), small savings in raw
+    token count are often erased by padding.  Even when padding does reduce
+    the bucket, the chunked-SDPA / column-replication overhead may still
+    dominate the matmul savings.
+
+    Thresholds from Llama3-70B Galaxy (8×4 mesh) with k/q_chunk_size=128
+    and SDPA_CHUNK_ALIGN=128.
+    """
+
+    if num_cached == 0:
+        return False
+
+    new_tokens = seq_len - num_cached
+    padded_new = get_padded_prefill_len(new_tokens)
+    padded_total = get_padded_prefill_len(seq_len)
+
+    # If padding erases the compute savings, always skip caching.
+    if padded_new >= padded_total:
+        return True
+
+    ratio = padded_new / padded_total
+
+    # ratio 0.125: beneficial for all padded_total
+    if ratio <= 0.125:
+        return False
+
+    if ratio <= 0.25:
+        return padded_total > 32768
+
+    # ratio 0.5: beneficial for padded_total <= 16384;
+    if ratio <= 0.5:
+        return padded_total > 16384
+
+    # ratio > 0.5: skip (should not occur when padded_new < padded_total).
+    return True
 
 
 def _get_max_blocks_prefill(kv_cache) -> int:
@@ -112,6 +161,27 @@ class Generator(WarmupForwardMixin):
         self._disable_prefill_tracing = False  # Whether to disable prefill traces
         self._disable_decode_tracing = False  # Whether to disable decode traces
 
+    def _set_prefill_column_mask(self, tt_column_mask):
+        # Keep mask available on whichever TT_CCL instance attention currently uses.
+        # Model-level CCL references may differ from layer-level ones (e.g. after the
+        # double setup_prefill() in TtTransformer.__init__), so we must also walk the
+        # attention layers' own tt_ccl references.
+        seen_ids = set()
+        ccl_refs = []
+        for ccl_name in ("tt_ccl", "tt_ccl_prefill", "tt_ccl_decode"):
+            ccl_obj = getattr(self.model, ccl_name, None)
+            if ccl_obj is not None and id(ccl_obj) not in seen_ids:
+                seen_ids.add(id(ccl_obj))
+                ccl_refs.append(ccl_obj)
+        # Layer-level attention CCL refs (may point to a stale prefill CCL)
+        for layer in self.model.layers:
+            attn_ccl = getattr(layer.attention, "tt_ccl", None)
+            if attn_ccl is not None and id(attn_ccl) not in seen_ids:
+                seen_ids.add(id(attn_ccl))
+                ccl_refs.append(attn_ccl)
+        for ccl_obj in ccl_refs:
+            ccl_obj._prefill_column_mask = tt_column_mask
+
     def warmup_prefill_traces(
         self,
         tokens: torch.Tensor,
@@ -131,14 +201,15 @@ class Generator(WarmupForwardMixin):
         supported_seqlens = (
             self.model.tt_ccl.support_seqlens
         )  # caching because running prefill can switch mode to decode
+        block_size = get_block_size(kv_cache[0]) if kv_cache else 64
+
+        # Phase 1: sp0 traces (no prefix caching) - batch 1 and 32
         for supported_length in supported_seqlens:
             logger.info(f"Creating warmup tensor for sequence length: {supported_length}")
-            # Capture trace for both
             for batch in (1, 32):  # TODO add proper support for batched prefill == b-32
                 logger.info(f"Running warmup prefill for sequence length: {supported_length}, batch: {batch}")
-                # For batched prefill this needs to be *32
-                if batch == 32 and supported_length == 4096:
-                    # For batched prefill max batch sequence length is 2048 or lower (128k limit)
+                if batch == 32 and supported_length != 128:
+                    # For batched prefill we only support 128 tokens per user
                     logger.info(f"Skipping warm up step on batched prefill for sequence length {supported_length}")
                     continue
                 if batch == 32:
@@ -164,6 +235,55 @@ class Generator(WarmupForwardMixin):
                     warmup_empty_slots,
                     tt_out_logits_all_users,
                 )
+
+        # Reset device synchronisation state between phases.
+        # Phase 1 accumulates CCL semaphore / stall-group state across sp0 trace
+        # captures, replays, and the process_output_prefill calls that follow each
+        # replay.  A decode→prefill mode-switch cycle flushes that state.
+        self.model.switch_mode("decode")
+        self.model.switch_mode("prefill")
+
+        # Phase 2: sp1 traces (prefix caching): batch 1 only, one per supported length.
+        # Uses a fixed cached prefix aligned to both SDPA chunk size and page block size.
+        num_cached = SDPA_CHUNK_ALIGN
+        if page_table is not None:
+            num_blocks_for_prefix_cache = max(
+                num_blocks_in_seq(num_cached + sl, block_size) for sl in supported_seqlens
+            )
+
+            # Use DISTINCT sequential block IDs (0, 1, 2, ...) instead of all-zeros.
+            # paged_fill_cache and chunked_scaled_dot_product_attention need distinct physical
+            # blocks to avoid write-after-write hazards and pathological read patterns that
+            # can hang during trace replay (especially for small chunk_page_tables like 128).
+            page_table_phase2 = torch.arange(num_blocks_for_prefix_cache, dtype=torch.int32).unsqueeze(0)
+
+            for supported_length in supported_seqlens:
+                # Warmup records all sp1 traces regardless of the inference heuristic.
+                # _should_skip_prefix_caching is for inference-time only.
+                total_seq_len = num_cached + supported_length
+                assert (
+                    total_seq_len % block_size == 0
+                ), f"total_seq_len ({total_seq_len}) must be aligned to block_size ({block_size})"
+                logger.info(
+                    f"Running warmup prefill for prefix caching: prefill_seq_len={supported_length}, "
+                    f"num_cached={num_cached}, total_seq_len={total_seq_len}"
+                )
+                warmup_tokens = torch.zeros(1, total_seq_len, dtype=torch.long)
+                warmup_prompt_lens = torch.tensor([total_seq_len], dtype=torch.long)
+                self.prefill_forward_text(
+                    warmup_tokens,
+                    page_table_phase2,
+                    kv_cache,
+                    warmup_prompt_lens,
+                    enable_trace,
+                    sampling_params,
+                    [0],
+                    tt_out_logits_all_users,
+                    start_pos=[num_cached],
+                )
+        else:
+            logger.info("Skipping prefix-caching warmup (page_table is None, non-paged attention)")
+
         logger.info("Prefill traces warmup completed")
 
     def prefill_forward_text(
@@ -210,6 +330,34 @@ class Generator(WarmupForwardMixin):
         # Extract num_cached_tokens from start_pos
         num_cached_tokens_list = [int(start_pos[idx]) if start_pos is not None else 0 for idx in range(batch)]
 
+        # Align num_cached_tokens to SDPA chunk boundary.  Chunked SDPA requires
+        # chunk_start_idx to be a multiple of SDPA_CHUNK_ALIGN.  When page_size <
+        # SDPA_CHUNK_ALIGN (e.g. 64), rounding down re-computes boundary tokens
+        # (harmless: same KV data is overwritten).
+        for idx in range(batch):
+            if num_cached_tokens_list[idx] > 0:
+                aligned = (num_cached_tokens_list[idx] // SDPA_CHUNK_ALIGN) * SDPA_CHUNK_ALIGN
+                if aligned != num_cached_tokens_list[idx]:
+                    logger.info(
+                        f"SDPA chunk alignment: user {idx} cached {num_cached_tokens_list[idx]} "
+                        f"-> {aligned} (aligned to {SDPA_CHUNK_ALIGN})"
+                    )
+                    num_cached_tokens_list[idx] = aligned
+
+        # Heuristic: revert to non-cached path when prefix-caching overhead
+        # exceeds the compute savings (chunked-SDPA penalty, column masking,
+        # replication).  Overwriting cached KV blocks with identical data is
+        # harmless, so this is functionally safe.
+        # Skip during warmup so we record all sp1 traces regardless.
+        if not self.prefill_traces_warmup:
+            for idx, seq_len in enumerate(prompt_lens):
+                if _should_skip_prefix_caching(int(seq_len), num_cached_tokens_list[idx]):
+                    logger.info(
+                        f"Prefix-caching heuristic: skipping cache for user {idx} "
+                        f"(seq_len={int(seq_len)}, cached={num_cached_tokens_list[idx]})"
+                    )
+                    num_cached_tokens_list[idx] = 0
+
         # Calculate and pad prefill_seq_lens excluding cached tokens
         prefill_seq_lens = [
             get_padded_prefill_len(seq_len - num_cached_tokens_list[idx]) for idx, seq_len in enumerate(prompt_lens)
@@ -227,7 +375,7 @@ class Generator(WarmupForwardMixin):
         if empty_slots is None:
             empty_slots = list(range(batch))
 
-        # If batch is 32 and prompt_lens are all the same and batch_seq_len * batch is less than 128*1024, use batched prefill
+        # If batch >= 16 and padded prompt_lens are all 128, and no cached tokens, use batched prefill
         use_batched_prefill = False
         if (
             batch >= 16
@@ -555,6 +703,7 @@ class Generator(WarmupForwardMixin):
             tt_page_table,
             tt_chunk_page_table,
             tt_chunk_start_idx,
+            tt_column_mask,
         ) = self.model.prepare_inputs_prefill(
             tokens,
             user_id=user_id,
@@ -563,6 +712,8 @@ class Generator(WarmupForwardMixin):
             chunk_start_idx=prefill_chunk_start_idx,
             batch_size=batch_size,
         )
+        # Store column_mask on CCL reference(s) used by attention.
+        self._set_prefill_column_mask(tt_column_mask)
         full_rot_mats = self.model.get_or_create_prefill_rot_mats()
         tt_toks = self.model.ttnn_prefill_forward(
             x=tt_prefill_input,
@@ -618,11 +769,10 @@ class Generator(WarmupForwardMixin):
             chunk_blocks = num_blocks_in_seq(prefill_seq_len, block_size)
             chunk_page_table = _pad_or_create_page_table(chunk_page_table, chunk_blocks)
 
-        use_ring_sdpa = should_use_ring_distributed_sdpa(prefill_seq_len, batch_size, chunk_start_idx)
         # use_start_pos: sp0 = no prefix cache (chunk_start_idx 0), sp1 = prefix cache (chunk_start_idx > 0).
         # Required because the attention path differs (regular/ring SDPA vs chunked SDPA + fill table).
         use_start_pos = "sp1" if (chunk_start_idx is not None and chunk_start_idx > 0) else "sp0"
-        trace_key = f"{prefill_seq_len}_{batch_size}_{'ring' if use_ring_sdpa else 'no_ring'}_{use_start_pos}"
+        trace_key = f"{prefill_seq_len}_{batch_size}_{use_start_pos}"
 
         # For prefix caching, the model output has only prefill_seq_len positions (the chunk).
         # Relative index within the chunk (0..prefill_seq_len-1) for get_last_token and output processing.
@@ -677,7 +827,7 @@ class Generator(WarmupForwardMixin):
         Captures a trace for the prefill_forward method with prefix caching support.
         Uses full rot mats + chunk_start_idx device tensor; slicing inside the trace.
         """
-        # Get host tensors (tokens, user_id, page_table, chunk_page_table, chunk_start_idx)
+        # Get host tensors (tokens, user_id, page_table, chunk_page_table, chunk_start_idx, column_mask)
         host_inputs = self.model.prepare_prefill_inputs_host(
             tokens,
             user_id=user_id,
@@ -686,17 +836,40 @@ class Generator(WarmupForwardMixin):
             chunk_start_idx=start_pos,
             batch_size=batch_size,
         )
-        tokens_host, user_id_host, tt_page_table_host, tt_chunk_page_table_host, tt_chunk_start_idx_host = host_inputs
+        (
+            tokens_host,
+            user_id_host,
+            tt_page_table_host,
+            tt_chunk_page_table_host,
+            tt_chunk_start_idx_host,
+            tt_column_mask_host,
+        ) = host_inputs
 
         # Copy host tensors to device
         device_inputs = copy_host_to_device(
-            (tokens_host, user_id_host, tt_page_table_host, tt_chunk_page_table_host, tt_chunk_start_idx_host),
+            (
+                tokens_host,
+                user_id_host,
+                tt_page_table_host,
+                tt_chunk_page_table_host,
+                tt_chunk_start_idx_host,
+                tt_column_mask_host,
+            ),
             mesh_device=self.mesh_device,
         )
 
         # Transform inputs
         transformed_inputs = self.model.transform_prefill_inputs_device(*device_inputs)
-        tt_tokens, tt_user_id, tt_page_table, tt_chunk_page_table, tt_chunk_start_idx = transformed_inputs
+        (
+            tt_tokens,
+            tt_user_id,
+            tt_page_table,
+            tt_chunk_page_table,
+            tt_chunk_start_idx,
+            tt_column_mask,
+        ) = transformed_inputs
+        # Store column_mask on CCL reference(s) used by attention.
+        self._set_prefill_column_mask(tt_column_mask)
         full_rot_mats = self.model.get_or_create_prefill_rot_mats()
 
         # Ensure CCL indices are zero before compile run (e.g. if this model was reused from
@@ -722,14 +895,30 @@ class Generator(WarmupForwardMixin):
 
         # Trace capture run
         device_inputs = copy_host_to_device(
-            (tokens_host, user_id_host, tt_page_table_host, tt_chunk_page_table_host, tt_chunk_start_idx_host),
+            (
+                tokens_host,
+                user_id_host,
+                tt_page_table_host,
+                tt_chunk_page_table_host,
+                tt_chunk_start_idx_host,
+                tt_column_mask_host,
+            ),
             mesh_device=self.mesh_device,
         )
+        # Update column_mask reference to the trace-capture buffer (trace reads from this buffer on replay)
+        self._set_prefill_column_mask(device_inputs[5])
         # Recorded trace must see CCL indices at 0; replay path resets before execute_trace.
         self.model.tt_ccl.reset_gather_and_buffer_idx()
         trace_id = ttnn.begin_trace_capture(self.mesh_device, cq_id=0)
         transformed_inputs = self.model.transform_prefill_inputs_device(*device_inputs)
-        tt_tokens, tt_user_id, tt_page_table, tt_chunk_page_table, tt_chunk_start_idx = transformed_inputs
+        (
+            tt_tokens,
+            tt_user_id,
+            tt_page_table,
+            tt_chunk_page_table,
+            tt_chunk_start_idx,
+            _tt_column_mask,
+        ) = transformed_inputs
         tt_out_trace = self.model.ttnn_prefill_forward(
             x=tt_tokens,
             user_id=tt_user_id,
@@ -763,7 +952,7 @@ class Generator(WarmupForwardMixin):
         """
         Executes the trace for the prefill_forward method with prefix caching support.
         """
-        # Get host tensors (tokens, user_id, page_table, chunk_page_table, chunk_start_idx)
+        # Get host tensors (tokens, user_id, page_table, chunk_page_table, chunk_start_idx, column_mask)
         host_inputs = self.model.prepare_prefill_inputs_host(
             tokens,
             user_id=user_id,
@@ -772,13 +961,27 @@ class Generator(WarmupForwardMixin):
             chunk_start_idx=start_pos,
             batch_size=batch_size,
         )
-        tokens_host, user_id_host, page_table_host, chunk_page_table_host, chunk_start_idx_host = host_inputs
+        (
+            tokens_host,
+            user_id_host,
+            page_table_host,
+            chunk_page_table_host,
+            chunk_start_idx_host,
+            column_mask_host,
+        ) = host_inputs
 
         # Copy host tensors into the stored device buffers (same buffers the trace was captured with).
-        # Overwritten: tokens, user_id, page_table, chunk_page_table, chunk_start_idx (all five device_inputs).
+        # Overwritten: tokens, user_id, page_table, chunk_page_table, chunk_start_idx, column_mask (all six device_inputs).
         # Slice of full rot mats is inside the trace; no ttnn_prefill_forward on replay.
         device_inputs = copy_host_to_device(
-            host_tensors=(tokens_host, user_id_host, page_table_host, chunk_page_table_host, chunk_start_idx_host),
+            host_tensors=(
+                tokens_host,
+                user_id_host,
+                page_table_host,
+                chunk_page_table_host,
+                chunk_start_idx_host,
+                column_mask_host,
+            ),
             device_tensors=device_inputs,
         )
 

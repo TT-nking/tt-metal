@@ -321,6 +321,9 @@ class TtTransformer(LightweightModule):
             chunk_page_table_padded = torch.zeros((columns, chunk_page_table.shape[1]), dtype=torch.int32)
             chunk_page_table_padded[user_id_column, :] = chunk_page_table[0, :]
 
+            # Same 32-byte stick alignment as main page_table (required by chunked SDPA / paged_fill_cache).
+            chunk_page_table_padded = _pad_table_cols_to_multiple_of_8_int32(chunk_page_table_padded, pad_value=0)
+
             tt_chunk_page_table = ttnn.from_torch(
                 chunk_page_table_padded,
                 device=None,
@@ -349,7 +352,20 @@ class TtTransformer(LightweightModule):
             mesh_mapper=ttnn.ReplicateTensorToMesh(self.mesh_device),
         )
 
-        return tokens, user_id, tt_page_table, tt_chunk_page_table, tt_chunk_start_idx
+        # Pre-computed column mask for chunked SDPA replication (prefix caching).
+        # Shape [8, 4, 1, 32] sharded by (0,1) → each device gets [1, 1, 1, 32].
+        # Owning column has 1.0, others 0.0. Sliced to [1,1,1,1] in attention.
+        column_mask_data = torch.zeros(rows, columns, 1, 32, dtype=torch.float32)
+        column_mask_data[:, user_id_column, :, :] = 1.0
+        tt_column_mask = ttnn.from_torch(
+            column_mask_data,
+            device=None,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, dims=(0, 1), mesh_shape=self.args.cluster_shape),
+        )
+
+        return tokens, user_id, tt_page_table, tt_chunk_page_table, tt_chunk_start_idx, tt_column_mask
 
     def transform_prefill_inputs_device(
         self,
@@ -358,10 +374,11 @@ class TtTransformer(LightweightModule):
         page_table=None,
         chunk_page_table=None,
         chunk_start_idx=None,
+        column_mask=None,
     ):
         tt_tokens = self.embd(tokens)
         tt_tokens = ttnn.unsqueeze_to_4D(tt_tokens)
-        return tt_tokens, user_id, page_table, chunk_page_table, chunk_start_idx
+        return tt_tokens, user_id, page_table, chunk_page_table, chunk_start_idx, column_mask
 
     def prepare_inputs_prefill(
         self,
@@ -375,7 +392,7 @@ class TtTransformer(LightweightModule):
         """
         Inputs are torch tensors or python types. This function returns ttnn
         tensors on device.
-        Returns 5 outputs: prefill_input, tt_user_id, page_table_tt, tt_chunk_page_table, tt_chunk_start_idx.
+        Returns 6 outputs: prefill_input, tt_user_id, page_table_tt, tt_chunk_page_table, tt_chunk_start_idx, tt_column_mask.
         """
         host_inputs = self.prepare_prefill_inputs_host(
             tokens, user_id, page_table, chunk_page_table, chunk_start_idx, batch_size

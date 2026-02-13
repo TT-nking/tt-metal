@@ -33,6 +33,9 @@ from models.demos.llama3_70b_galaxy.tt.load_checkpoints import (
     standardize_hf_keys,
 )
 
+# Chunk size for flexible chunked SDPA (prefix caching).  chunk_start_idx must be
+# a multiple of this; generator aligns num_cached_tokens down to this boundary.
+SDPA_CHUNK_ALIGN = 128
 
 PREFETCHER_NOC1_GRID = [
     (6, 6),
@@ -752,14 +755,12 @@ class TtModelArgs:
 
             # For flexible chunked SDPA (chunk_start_idx_tensor): fixed program config so one trace
             # works for any block-aligned chunk_start at replay.
-            # Chunk sizes must equal KV cache page_size (block_size) so chunk boundaries align with cache blocks.
-            # page_size is 32 or 64 (vLLM page_block_size); pass from paged_attention_config.block_size at call site.
-            # seqlen not used here, since the padding is always at least 128.
+            # Chunk sizes must match SDPA_CHUNK_ALIGN; generator aligns num_cached_tokens to it.
             self.model_config["SDPA_PROGCFG_FLEXIBLE_CHUNK"] = lambda seqlen, page_size: ttnn.SDPAProgramConfig(
                 compute_with_storage_grid_size=(7, 10),
                 exp_approx_mode=False,
-                q_chunk_size=min(page_size, 128),
-                k_chunk_size=min(page_size, 128),
+                q_chunk_size=SDPA_CHUNK_ALIGN,
+                k_chunk_size=SDPA_CHUNK_ALIGN,
             )
 
             def find_largest_divisor(n, max_divisor=8):

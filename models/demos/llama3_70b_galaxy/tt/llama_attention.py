@@ -8,12 +8,6 @@ from models.common.lightweightmodule import LightweightModule
 from models.common.rmsnorm import RMSNorm
 
 
-# Run ring_distributed_sdpa for > 1k seqlen because we are seeing worse perf for <=1k seqlen as compared to regular SDPA
-# ring_distributed_sdpa needs seqlen//8 to be atleast one tile (32)
-def should_use_ring_distributed_sdpa(seq_len: int, batch_size: int, chunk_start_idx) -> bool:
-    return seq_len > 1024 and batch_size == 1 and (chunk_start_idx is None or chunk_start_idx == 0)
-
-
 class TtLlamaAttention(LightweightModule):
     def __init__(
         self,
@@ -770,7 +764,7 @@ class TtLlamaAttention(LightweightModule):
 
         # Run ring_distributed_sdpa for > 1k seqlen because we are seeing worse perf for <=1k seqlen as compared to regular SDPA
         # ring_distributed_sdpa needs seqlen//8 to be atleast one tile (32)
-        ring_distributed_sdpa = should_use_ring_distributed_sdpa(seq_len, batch_size, chunk_start_idx)
+        ring_distributed_sdpa = seq_len > 1024 and batch_size == 1 and (chunk_start_idx is None or chunk_start_idx == 0)
         use_chunked_sdpa = chunk_start_idx is not None and chunk_start_idx > 0
 
         if ring_distributed_sdpa:
@@ -806,19 +800,11 @@ class TtLlamaAttention(LightweightModule):
 
                 # Replicate active column's data to all columns for correct RMSNORM behavior.
                 # Chunked SDPA writes only to the column for this user_id; we zero others and all-reduce so every column has the same output.
-                if self.column_lower is not None:
-                    # user_id_for_mask: [1, 1, 1, 1] — scalar user_id broadcast-friendly for comparison.
-                    user_id_for_mask = ttnn.reshape(user_id, (1, 1, 1, 1))
-                    # ge_lower: [1, 1, 1, 32] bool — True where user_id >= column lower bound (column belongs to this user or later).
-                    ge_lower = ttnn.ge(user_id_for_mask, self.column_lower)
-                    # lt_upper: [1, 1, 1, 32] bool — True where user_id < column upper bound (column is not past this user).
-                    lt_upper = ttnn.lt(user_id_for_mask, self.column_upper)
-                    # cond: [1, 1, 1, 32] bool — True only on the single active column (lower <= user_id < upper).
-                    cond = ttnn.logical_and(ge_lower, lt_upper)
-                    # mask: [1, 1, 1, 32] float — 1.0 on active column, 0.0 on inactive columns.
-                    mask = ttnn.where(cond, 1.0, 0.0)
-                    # mask: [1, 1, 1, 1] — slice to one scalar per device (all 32 entries were identical).
-                    mask = ttnn.slice(mask, [0, 0, 0, 0], [1, 1, 1, 1])
+                if self.TG:
+                    # Pre-computed column_mask: [1, 1, 1, 32] per device, 1.0 on owning column, 0.0 on others.
+                    # Stored on tt_ccl by the generator before forward; slice to scalar for broadcast.
+                    column_mask = self.tt_ccl._prefill_column_mask
+                    mask = ttnn.slice(column_mask, [0, 0, 0, 0], [1, 1, 1, 1])
                     # attn_output_84SD: zero out inactive columns (multiply by 0); active column unchanged (multiply by 1).
                     attn_output_84SD = ttnn.multiply(attn_output_84SD, mask)
                     # line_all_reduce along columns: sum = active column's data (others 0); replicate to all columns so shape/values match for downstream.

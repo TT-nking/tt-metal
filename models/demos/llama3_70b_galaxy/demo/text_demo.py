@@ -538,7 +538,7 @@ def cached_llama_model_80l(mesh_device):
             False,  # use_prefix_caching
             0.0,  # prefix_cached_ratio
         ),
-        (  # prefill-profile [default 4K seqlen] - Runs 1L prefill-only
+        (  # prefill-profile-standard [default 4K seqlen] - Runs 1L prefill-only
             "models/demos/llama3_70b_galaxy/demo/sample_prompts/input_data_long_1k.json",  # input_prompts
             True,  # instruct mode
             1,  # repeat_batches
@@ -680,7 +680,7 @@ def cached_llama_model_80l(mesh_device):
         "long-32k-b1",  # 32k context for 1 user
         "long-64k-b1",  # 64k context for 1 user
         "long-128k-b1",  # 128k context for 1 user
-        "prefill-profile",  # prefill-only profile run
+        "prefill-profile-standard",  # prefill-only profile run
         "prefill-profile-prefix-caching",  # prefill-only, Phase 2 (prefix-cached) only, 50% cache
         "apc-test",  # apc check for 80L + teacher forced for prefill + pcc check on prefill and 1st decode token
         "pcc-80L",  # pcc check for 80L + teacher forced
@@ -702,7 +702,7 @@ def cached_llama_model_80l(mesh_device):
     "device_params",
     [
         {
-            "trace_region_size": 369831680,  # match conftest (2x for prefill benchmark trace)
+            "trace_region_size": 184915840,  # match conftest (Hold 9 traces)
             "num_command_queues": 1,
             "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "worker_l1_size": 1345000,
@@ -1586,7 +1586,7 @@ def test_demo_text(
 PREFILL_BENCHMARK_OUTPUT = Path(__file__).resolve().parent / "output" / "prefill_prefix_caching_benchmark.json"
 
 # Seq lengths (powers of 2 from 128 to 32k). Aligned to page_block_size for prefix-caching.
-PREFILL_BENCHMARK_SEQ_LENS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+PREFILL_BENCHMARK_SEQ_LENS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
 PREFILL_BENCHMARK_BLOCK_SIZE = 64
 
 
@@ -1599,7 +1599,7 @@ def _make_synthetic_prefill_input(batch_size, seq_len, vocab_size, dtype=torch.l
 def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
     """
     Measure prefill time (after warmup) for seq_len in [128..32k] (powers of 2),
-    with no prefix caching vs 50% prefix cached. Uses synthetic input tokens.
+    with no prefix caching vs 50%/75%/90% prefix cached. Uses synthetic input tokens.
     Results written to demo/output/.
     """
     page_params = {"page_block_size": PREFILL_BENCHMARK_BLOCK_SIZE, "page_max_num_blocks": 2048}
@@ -1623,7 +1623,7 @@ def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
         input_tokens_prefill_pt = _make_synthetic_prefill_input(batch_size, seq_len, vocab_size)
         decoding_pos = torch.tensor([seq_len], dtype=torch.long)
 
-        for use_prefix_caching, prefix_cached_ratio in [(False, 0.0), (True, 0.5)]:
+        for use_prefix_caching, prefix_cached_ratio in [(False, 0.0), (True, 0.5), (True, 0.75), (True, 0.90)]:
             # Compute start_pos for prefix-cached case (warmup and measured use same input lengths)
             num_cached = 0
             if use_prefix_caching:
@@ -1670,7 +1670,9 @@ def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
                         "prefill_s": prefill_s,
                     }
                     results.append(row)
-                    logger.info(f"seq_len={seq_len} prefix_cached={use_prefix_caching} -> {prefill_s:.4f}s")
+                    logger.info(
+                        f"seq_len={seq_len} prefix_cached={use_prefix_caching} ratio={prefix_cached_ratio:.0%} -> {prefill_s:.4f}s"
+                    )
 
     # Write results
     PREFILL_BENCHMARK_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
@@ -1684,15 +1686,25 @@ def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
         k = r["seq_len"]
         if k not in by_len:
             by_len[k] = {}
-        label = "50%_cache" if r["use_prefix_caching"] else "no_cache"
+        if not r["use_prefix_caching"]:
+            label = "no_cache"
+        else:
+            label = f"{int(r['prefix_cached_ratio'] * 100)}%_cache"
         by_len[k][label] = r["prefill_s"]
 
+    cache_cols = ["50%_cache", "75%_cache", "90%_cache"]
+    header = f"{'seq_len':>8}  {'no_cache':>10}"
+    for col in cache_cols:
+        header += f"  {col:>10}  {'spdup':>5}"
     print("\n=== Prefill time (s) after warmup ===")
-    print(f"{'seq_len':>8}  {'no_cache':>10}  {'50%_cache':>10}  speedup")
-    print("-" * 45)
+    print(header)
+    print("-" * len(header))
     for seq_len in sorted(by_len.keys()):
         d = by_len[seq_len]
         nc = d.get("no_cache", 0)
-        c50 = d.get("50%_cache", 0)
-        sp = f"{nc / c50:.2f}x" if c50 > 0 else "—"
-        print(f"{seq_len:>8}  {nc:>10.4f}  {c50:>10.4f}  {sp}")
+        line = f"{seq_len:>8}  {nc:>10.4f}"
+        for col in cache_cols:
+            cv = d.get(col, 0)
+            sp = f"{nc / cv:.2f}x" if cv > 0 else "—"
+            line += f"  {cv:>10.4f}  {sp:>5}"
+        print(line)
