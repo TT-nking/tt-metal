@@ -531,7 +531,7 @@ ttnn::operations::ternary::TernaryDeviceOperation::tensor_return_value_t ternary
     const Tensor& input_a,
     const Tensor& input_b,
     const Tensor& input_c,
-    float scalar,
+    ttnn::operations::ternary::ScalarVariant scalar,
     const std::optional<const DataType>& output_dtype,
     const std::optional<MemoryConfig>& memory_config,
     const std::optional<Tensor>& optional_output_tensor,
@@ -559,7 +559,7 @@ ttnn::operations::ternary::TernaryDeviceOperation::tensor_return_value_t ternary
         .dtype = output_dtype.value_or(input_b.dtype()),
         .compute_kernel_config = std::nullopt,
         .sub_core_grids = sub_core_grids,
-        .scalar_input_a = scalar,  // Reuse scalar_input_a for ADDCMUL/ADDCDIV scalar value
+        .scalar_input_a = scalar,
         .scalar_input_b = std::nullopt,
     };
 
@@ -598,7 +598,7 @@ ttnn::operations::ternary::TernaryDeviceOperation::tensor_return_value_t ternary
         .dtype = output_dtype.value_or(input_b.dtype()),
         .compute_kernel_config = std::nullopt,
         .sub_core_grids = sub_core_grids,
-        .scalar_input_b = scalar_c,
+        .scalar_input_b = ttnn::operations::ternary::ScalarVariant(scalar_c),
     };
 
     OperationType::tensor_args_t args{
@@ -635,7 +635,7 @@ ttnn::operations::ternary::TernaryDeviceOperation::tensor_return_value_t ternary
         .dtype = output_dtype.value_or(input_c.dtype()),
         .compute_kernel_config = std::nullopt,
         .sub_core_grids = sub_core_grids,
-        .scalar_input_a = scalar_b,
+        .scalar_input_a = ttnn::operations::ternary::ScalarVariant(scalar_b),
     };
 
     OperationType::tensor_args_t args{
