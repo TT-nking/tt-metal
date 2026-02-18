@@ -477,6 +477,7 @@ class Transformer(LightweightModule):
         chunk_start_idx=None,
         get_last_token=-1,
         kv_cache=None,
+        batch_size=1,
     ):
         """
         This method will take device tensors and any other args to run forward.
@@ -494,6 +495,7 @@ class Transformer(LightweightModule):
             chunk_start_idx=chunk_start_idx,
             get_last_token=get_last_token,
             kv_cache=kv_cache,
+            batch_size=batch_size,
         )
 
     def _increment_decode_positions_device(self, current_pos, rot_mat_idxs):
@@ -591,6 +593,7 @@ class Transformer(LightweightModule):
         chunk_start_idx=None,
         get_last_token=-1,
         kv_cache=None,
+        batch_size=1,
     ):
         if mode == Mode.DECODE:
             # Run prefetcher if it is enabled
@@ -623,6 +626,7 @@ class Transformer(LightweightModule):
                 chunk_page_table=chunk_page_table,
                 chunk_start_idx=chunk_start_idx,
                 kv_cache=kv_cache[i] if kv_cache is not None else None,
+                batch_size=batch_size,
             )
 
         if mode == Mode.DECODE:
