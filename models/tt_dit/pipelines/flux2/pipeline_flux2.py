@@ -303,7 +303,10 @@ class Flux2Pipeline:
             with timer.time_section("total_encoding") if timer else nullcontext():
                 with self.encoder_reshape(self.encoder_device):
                     prompt_embeds, _mask = self._prompt_encoder.encode(
-                        prompts, num_images_per_prompt=num_images_per_prompt, sequence_length=512
+                        prompts,
+                        num_images_per_prompt=num_images_per_prompt,
+                        sequence_length=512,
+                        enable_tracing=traced,
                     )
             _, prompt_sequence_length, _ = prompt_embeds.shape
 

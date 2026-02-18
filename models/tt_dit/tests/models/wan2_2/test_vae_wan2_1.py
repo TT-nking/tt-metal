@@ -30,6 +30,7 @@ from ....parallel.manager import CCLManager
 from ....utils.check import assert_quality
 from ....utils.conv3d import conv_pad_height, conv_pad_in_channels, conv_unpad_height, count_convs
 from ....utils.tensor import bf16_tensor_2dshard
+from ....utils.tracing import Tracer
 
 
 def setup_hooks(model):
@@ -1101,6 +1102,7 @@ def test_wan_decoder3d(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, nu
         parallel_config=parallel_config,
     )
     tt_model.load_torch_state_dict(torch_model.state_dict())
+    tracer = Tracer(tt_model.forward, device=mesh_device)
 
     num_convs = count_convs(tt_model)
 
@@ -1131,7 +1133,7 @@ def test_wan_decoder3d(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, nu
         logger.info(f"torch output shape: {torch_output.shape}")
 
         logger.info(f"running tt model")
-        tt_output, new_logical_h = tt_model(
+        tt_output, new_logical_h = tracer(
             tt_input_tensor,
             logical_h,
             feat_cache=tt_feat_cache,
@@ -1304,6 +1306,7 @@ def test_wan_decoder(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, num_
         parallel_config=parallel_config,
     )
     tt_model.load_torch_state_dict(torch_model.state_dict())
+    tracer = Tracer(tt_model.forward, device=mesh_device)
 
     torch_input_tensor = torch.randn(B, C, T, H, W, dtype=torch_dtype) * std + mean
     tt_input_tensor = torch_input_tensor.permute(0, 2, 3, 4, 1)
@@ -1317,7 +1320,7 @@ def test_wan_decoder(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, num_
 
     logger.info(f"running tt model")
     start = time.time()
-    tt_output, new_logical_h = tt_model(
+    tt_output, new_logical_h = tracer(
         tt_input_tensor,
         logical_h,
     )
@@ -1434,7 +1437,8 @@ def test_wan_encoder3d(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, nu
         ccl_manager=ccl_manager,
         parallel_config=parallel_config,
     )
-    tt_model.load_state_dict(torch_model.state_dict())
+    tt_model.load_torch_state_dict(torch_model.state_dict())
+    tracer = Tracer(tt_model.forward, device=mesh_device)
 
     num_convs = count_convs(tt_model)
 
@@ -1467,7 +1471,7 @@ def test_wan_encoder3d(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, nu
         logger.info(f"torch output shape: {torch_output.shape}")
 
         logger.info(f"running tt model")
-        tt_output, new_logical_h = tt_model(
+        tt_output, new_logical_h = tracer(
             tt_input_tensor,
             logical_h,
             feat_cache=tt_feat_cache,
@@ -1640,7 +1644,8 @@ def test_wan_encoder(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, num_
         ccl_manager=ccl_manager,
         parallel_config=parallel_config,
     )
-    tt_model.load_state_dict(torch_model.state_dict())
+    tt_model.load_torch_state_dict(torch_model.state_dict())
+    tracer = Tracer(tt_model.forward, device=mesh_device)
 
     torch_input_tensor = torch.randn(B, C, T, H, W, dtype=torch_dtype) * std + mean
     tt_input_tensor = torch_input_tensor.permute(0, 2, 3, 4, 1)
@@ -1654,7 +1659,7 @@ def test_wan_encoder(mesh_device, B, C, T, H, W, mean, std, h_axis, w_axis, num_
 
     logger.info(f"running tt model")
     start = time.time()
-    tt_output, new_logical_h = tt_model(
+    tt_output, new_logical_h = tracer(
         tt_input_tensor,
         logical_h,
     )

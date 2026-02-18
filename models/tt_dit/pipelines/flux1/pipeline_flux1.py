@@ -172,6 +172,7 @@ class Flux1Pipeline:
 
         if use_torch_clip_text_encoder:
             self._text_encoder_1 = torch_text_encoder_1
+            self._clip_tracer = None
         else:
             clip_config_1 = CLIPConfig(
                 vocab_size=torch_text_encoder_1.config.vocab_size,
@@ -194,10 +195,12 @@ class Flux1Pipeline:
             )
 
             self._text_encoder_1.load_torch_state_dict(torch_text_encoder_1.state_dict())
+            self._clip_tracer = Tracer(self._text_encoder_1.forward, device=self.encoder_device)
 
         if enable_t5_text_encoder:
             if use_torch_t5_text_encoder:
                 self._t5_text_encoder = torch_t5_text_encoder
+                self._t5_tracer = None
             else:
                 logger.info("creating TT-NN text encoder...")
 
@@ -229,8 +232,10 @@ class Flux1Pipeline:
                     parallel_config=encoder_parallel_config,
                     mesh_shape=tuple(self.encoder_device.shape),
                 )
+                self._t5_tracer = Tracer(self._t5_text_encoder.forward, device=self.encoder_device)
         else:
             self._t5_text_encoder = None
+            self._t5_tracer = None
 
         ttnn.synchronize_device(self.encoder_device)
 
@@ -376,6 +381,7 @@ class Flux1Pipeline:
                     num_images_per_prompt=num_images_per_prompt,
                     cfg_enabled=cfg_enabled,
                     clip_skip=clip_skip,
+                    traced=traced,
                     profiler=profiler,
                     profiler_iteration=profiler_iteration,
                 )
@@ -673,6 +679,7 @@ class Flux1Pipeline:
         prompt_2: list[str],
         num_images_per_prompt: int,
         clip_skip: int = 0,
+        traced: bool = False,
         profiler: BenchmarkProfiler = None,
         profiler_iteration: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -684,6 +691,7 @@ class Flux1Pipeline:
                 num_images_per_prompt=num_images_per_prompt,
                 tokenizer=self._tokenizer_1,
                 text_encoder=self._text_encoder_1,
+                tracer=self._clip_tracer if traced else None,
                 sequence_length=tokenizer_max_length,
                 mesh_device=self.encoder_device,
                 clip_skip=clip_skip,
@@ -693,6 +701,7 @@ class Flux1Pipeline:
             t5_prompt_embeds = _get_t5_prompt_embeds(
                 prompts=prompt_2,
                 text_encoder=self._t5_text_encoder,
+                tracer=self._t5_tracer if traced else None,
                 tokenizer=self._t5_tokenizer,
                 sequence_length=self.T5_SEQUENCE_LENGTH,
                 empty_sequence_length=self.T5_SEQUENCE_LENGTH,
@@ -716,6 +725,7 @@ class Flux1Pipeline:
         num_images_per_prompt: int,
         cfg_enabled: bool,
         clip_skip: int = 0,
+        traced: bool = False,
         profiler: BenchmarkProfiler = None,
         profiler_iteration: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -724,6 +734,7 @@ class Flux1Pipeline:
             prompt_2=prompt_2,
             num_images_per_prompt=num_images_per_prompt,
             clip_skip=clip_skip,
+            traced=traced,
             profiler=profiler,
             profiler_iteration=profiler_iteration,
         )
@@ -736,6 +747,7 @@ class Flux1Pipeline:
             prompt_2=negative_prompt_2,
             num_images_per_prompt=num_images_per_prompt,
             clip_skip=clip_skip,
+            traced=traced,
             profiler=profiler,
             profiler_iteration=profiler_iteration,
         )
@@ -751,6 +763,7 @@ def _get_clip_prompt_embeds(
     *,
     prompts: list[str],
     text_encoder: CLIPEncoder | CLIPTextModel,
+    tracer: Tracer | None = None,
     tokenizer: CLIPTokenizer,
     sequence_length: int,
     num_images_per_prompt: int,
@@ -785,9 +798,8 @@ def _get_clip_prompt_embeds(
             mesh_mapper=ttnn.replicate_tensor_to_mesh_mapper(mesh_device),
         )
 
-        tt_prompt_embeds, tt_pooled_prompt_embeds = text_encoder(
+        tt_prompt_embeds, tt_pooled_prompt_embeds = (tracer or text_encoder.forward)(
             prompt_tokenized=tt_tokens,
-            mesh_device=mesh_device,
         )
         tt_prompt_embeds = tt_prompt_embeds[-(clip_skip + 2)]
 
@@ -813,6 +825,7 @@ def _get_t5_prompt_embeds(
     *,
     prompts: list[str],
     text_encoder: T5Encoder | T5EncoderModel | None,
+    tracer: Tracer | None = None,
     tokenizer: T5TokenizerFast,
     sequence_length: int,
     empty_sequence_length: int,
@@ -850,7 +863,7 @@ def _get_t5_prompt_embeds(
             device=mesh_device,
             mesh_mapper=ttnn.replicate_tensor_to_mesh_mapper(mesh_device),
         )
-        tt_hidden_states = text_encoder(prompt=tt_tokens, device=mesh_device)
+        tt_hidden_states = (tracer or text_encoder.forward)(prompt=tt_tokens)
         tt_prompt_embeds = tt_hidden_states[-1]
 
         prompt_embeds = ttnn.to_torch(ttnn.get_device_tensors(tt_prompt_embeds)[0])

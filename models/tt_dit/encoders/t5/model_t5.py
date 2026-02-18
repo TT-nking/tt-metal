@@ -106,10 +106,8 @@ class T5Encoder(Module):
 
         pop_substate(state, "shared")
 
-    def forward(
-        self, prompt: ttnn.Tensor, device: ttnn.Device, *, attention_mask: ttnn.Tensor | None = None
-    ) -> ttnn.Tensor:
-        embeddings, position_bias = self.token_embeddings(prompt, device)
+    def forward(self, prompt: ttnn.Tensor, *, attention_mask: ttnn.Tensor | None = None) -> ttnn.Tensor:
+        embeddings, position_bias = self.token_embeddings(prompt)
 
         if attention_mask is not None:
             attention_mask = (attention_mask - 1.0) * float("inf")
@@ -499,6 +497,8 @@ class RelativeTextEmbeddings(Module):
             device=mesh_device,
         )
 
+        self._relative_position_bias_cache: dict[tuple, ttnn.Tensor] = {}
+
         self.config = config
         self.mesh_device = mesh_device
         self.parallel_config = parallel_config
@@ -510,16 +510,26 @@ class RelativeTextEmbeddings(Module):
         if "relative_attention_bias.weight" in state:
             state["relative_attention_bias_weights"] = state.pop("relative_attention_bias.weight")
 
-    def forward(self, prompt: ttnn.Tensor, device: ttnn.Device) -> ttnn.Tensor:
+    def forward(self, prompt: ttnn.Tensor) -> ttnn.Tensor:
         input_embeddings = ttnn.embedding(prompt, self.token_embedding_weights.data, layout=ttnn.TILE_LAYOUT)
-        position_bias = _compute_relative_position_bias(
-            seq_length=prompt.shape[-1],
-            device=device,
-            relative_attention_num_buckets=self.config.relative_attention_num_buckets,
-            relative_attention_max_distance=self.config.relative_attention_max_distance,
-            relative_attention_bias=self.relative_attention_bias_weights.data,
-            parallel_config=self.parallel_config,
+
+        cache_key = (
+            prompt.shape[-1],
+            self.config.relative_attention_num_buckets,
+            self.config.relative_attention_max_distance,
         )
+        if cache_key in self._relative_position_bias_cache:
+            position_bias = self._relative_position_bias_cache[cache_key]
+        else:
+            position_bias = _compute_relative_position_bias(
+                seq_length=prompt.shape[-1],
+                device=self.mesh_device,
+                relative_attention_num_buckets=self.config.relative_attention_num_buckets,
+                relative_attention_max_distance=self.config.relative_attention_max_distance,
+                relative_attention_bias=self.relative_attention_bias_weights.data,
+                parallel_config=self.parallel_config,
+            )
+            self._relative_position_bias_cache[cache_key] = position_bias
 
         return input_embeddings, position_bias
 

@@ -363,6 +363,7 @@ class MotifPipeline:
                         negative_prompt_3=negative_prompt_3,
                         num_images_per_prompt=num_images_per_prompt,
                         cfg_enabled=cfg_enabled,
+                        traced=traced,
                         profiler=profiler,
                         profiler_iteration=profiler_iteration,
                     )
@@ -606,6 +607,7 @@ class MotifPipeline:
         negative_prompt_3: list[str | None],
         num_images_per_prompt: int,
         cfg_enabled: bool,
+        traced: bool = False,
         profiler: BenchmarkProfiler = None,
         profiler_iteration: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -620,6 +622,7 @@ class MotifPipeline:
                 prompt_2,
                 prompt_3,
                 num_images_per_prompt=num_images_per_prompt,
+                traced=traced,
                 profiler=profiler,
                 profiler_iteration=profiler_iteration,
             )
@@ -629,6 +632,7 @@ class MotifPipeline:
                 negative_prompt_2,
                 negative_prompt_3,
                 num_images_per_prompt=num_images_per_prompt,
+                traced=traced,
                 profiler=profiler,
                 profiler_iteration=profiler_iteration,
             )
@@ -713,14 +717,19 @@ class TextEncoder:
         prompts_3: Iterable[str],
         *,
         num_images_per_prompt: int,
+        traced: bool = False,
         profiler: BenchmarkProfiler = None,
         profiler_iteration: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         with profiler("clip_encoding", profiler_iteration) if profiler else nullcontext():
-            clip_l, pooled_clip_l = self._clip_l.encode(prompts=prompts_1, num_images_per_prompt=num_images_per_prompt)
-            clip_g, pooled_clip_g = self._clip_g.encode(prompts=prompts_2, num_images_per_prompt=num_images_per_prompt)
+            clip_l, pooled_clip_l = self._clip_l.encode(
+                prompts=prompts_1, num_images_per_prompt=num_images_per_prompt, enable_tracing=traced
+            )
+            clip_g, pooled_clip_g = self._clip_g.encode(
+                prompts=prompts_2, num_images_per_prompt=num_images_per_prompt, enable_tracing=traced
+            )
         with profiler("t5_encoding", profiler_iteration) if profiler else nullcontext():
-            t5 = self._t5.encode(prompts=prompts_3, num_images_per_prompt=num_images_per_prompt)
+            t5 = self._t5.encode(prompts=prompts_3, num_images_per_prompt=num_images_per_prompt, enable_tracing=traced)
 
         clip = torch.cat([clip_l, clip_g], dim=-1)
         clip = torch.nn.functional.pad(clip, (0, t5.shape[-1] - clip.shape[-1]))

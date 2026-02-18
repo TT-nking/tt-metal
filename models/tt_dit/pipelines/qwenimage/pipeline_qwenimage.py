@@ -478,6 +478,7 @@ class QwenImagePipeline:
                         cfg_enabled=cfg_enabled,
                         profiler=profiler,
                         profiler_iteration=profiler_iteration,
+                        traced=traced,
                     )
             _, prompt_sequence_length, _ = prompt_embeds.shape
 
@@ -748,6 +749,7 @@ class QwenImagePipeline:
         cfg_enabled: bool,
         profiler: BenchmarkProfiler = None,
         profiler_iteration: int = 0,
+        traced: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert len(prompts) == len(negative_prompts), "prompts and negative_prompts must have the same length"
 
@@ -763,6 +765,7 @@ class QwenImagePipeline:
             prompts,
             num_images_per_prompt=num_images_per_prompt,
             sequence_length=512 + PROMPT_DROP_IDX,
+            enable_tracing=traced,
         )
 
         embeds[torch.logical_not(mask)] = 0.0
