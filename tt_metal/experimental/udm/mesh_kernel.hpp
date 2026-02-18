@@ -5,10 +5,14 @@
 #pragma once
 
 #include <string>
-#include <set>
 #include "tt_metal/experimental/udm/types.hpp"
 #include "tt_metal/experimental/udm/mesh_program.hpp"
 #include "tt_metal/api/tt-metalium/kernel_types.hpp"
+
+namespace tt::tt_metal {
+struct DataMovementConfig;
+struct ComputeConfig;
+}  // namespace tt::tt_metal
 
 namespace tt::tt_metal::experimental::udm {
 
@@ -19,7 +23,7 @@ namespace tt::tt_metal::experimental::udm {
  * @param program The MeshProgram to add the kernel to
  * @param file_name Path to the kernel source file
  * @param gcores The global cores to place the kernel on
- * @param config Kernel configuration (DataMovementConfig, ComputeConfig, or EthernetConfig)
+ * @param config Kernel configuration (DataMovementConfig or ComputeConfig)
  * @return MeshKernelHandle Map of grid_id to kernel handle for each grid
  */
 MeshKernelHandle CreateMeshKernel(
@@ -27,8 +31,7 @@ MeshKernelHandle CreateMeshKernel(
     MeshProgram& program,
     const std::string& file_name,
     const std::vector<GlobalCore>& gcores,
-    const std::variant<tt::tt_metal::DataMovementConfig, tt::tt_metal::ComputeConfig, tt::tt_metal::EthernetConfig>&
-        config);
+    const std::variant<tt::tt_metal::DataMovementConfig, tt::tt_metal::ComputeConfig>& config);
 
 /**
  * @brief Set runtime arguments for a specific gcore
