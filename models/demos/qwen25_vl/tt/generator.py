@@ -8,12 +8,13 @@ import torch
 from loguru import logger
 
 import ttnn
+from models.common.warmup import WarmupForwardMixin
 from models.demos.qwen25_vl.tt.common import get_block_size, get_max_prefill_chunk_size, num_blocks_in_seq
 from models.tt_transformers.tt.common import copy_host_to_device
 from models.tt_transformers.tt.generator import Generator as TTTGenerator
 
 
-class Generator:
+class Generator(WarmupForwardMixin):
     def __init__(self, model, model_args, mesh_device, processor=None, tokenizer=None):
         """
         Creating a Qwen2_5_Vision wrapper requires only a mesh_device and model_args.
@@ -366,7 +367,7 @@ class Generator:
         # convert to torch tensor
         self.model.rope_setup.rope_deltas = torch.tensor(rope_deltas_list)
 
-    def decode_forward_text(
+    def decode_forward(
         self,
         tokens,
         start_pos,
@@ -376,7 +377,7 @@ class Generator:
         read_from_device=True,
         sampling_params=None,
     ):
-        return self._ttt_generator.decode_forward_text(
+        return self._ttt_generator.decode_forward(
             tokens=tokens,
             start_pos=start_pos,
             page_table=page_table,
