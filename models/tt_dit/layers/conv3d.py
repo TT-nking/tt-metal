@@ -107,7 +107,18 @@ class ContextParallelConv3d(Module):
         self.padding = (0, height_pad, width_pad)
 
         d = self.kernel_size[0] * self.kernel_size[1] * self.kernel_size[2] * self.in_channels
-        self.weight = Parameter(total_shape=[d, self.out_channels], device=mesh_device, pad_value=0, on_host=True)
+        self.weight = Parameter(
+            total_shape=[
+                self.out_channels,
+                self.in_channels,
+                self.kernel_size[0],
+                self.kernel_size[1],
+                self.kernel_size[2],
+            ],
+            device=mesh_device,
+            pad_value=0,
+            on_host=True,
+        )
         self.bias = Parameter(total_shape=[1, self.out_channels], device=mesh_device, pad_value=0) if bias else None
 
         self.compute_kernel_config = ttnn.WormholeComputeKernelConfig(
