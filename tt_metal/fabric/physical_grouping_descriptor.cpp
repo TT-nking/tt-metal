@@ -13,6 +13,7 @@
 #include <set>
 #include <queue>
 #include <memory>
+#include <mutex>
 #include <cctype>
 #include <functional>
 #include <optional>
@@ -1611,6 +1612,24 @@ void process_higher_layer_and_recurse(
     }
 }
 
+// Helper function to get a static empty PSD for default cases
+static const tt::tt_metal::PhysicalSystemDescriptor& get_empty_psd() {
+    // Create a minimal empty PSD using a temporary file with empty proto content
+    // This will be used when no PSD is provided (skips validation)
+    static std::unique_ptr<tt::tt_metal::PhysicalSystemDescriptor> empty_psd;
+    static std::once_flag once_flag;
+    std::call_once(once_flag, []() {
+        // Create a temporary file with minimal empty PSD content
+        std::filesystem::path temp_file = std::filesystem::temp_directory_path() / "empty_psd.textproto";
+        std::ofstream ofs(temp_file);
+        ofs << "target_device_type: SILICON\n";  // Minimal valid PSD
+        ofs.close();
+        empty_psd = std::make_unique<tt::tt_metal::PhysicalSystemDescriptor>(temp_file.string());
+        std::filesystem::remove(temp_file);  // Clean up temp file
+    });
+    return *empty_psd;
+}
+
 }  // namespace
 
 ValidGroupingsMap PhysicalGroupingDescriptor::get_valid_groupings_for_mgd(
@@ -1750,6 +1769,12 @@ ValidGroupingsMap PhysicalGroupingDescriptor::get_valid_groupings_for_mgd(
     }
 
     return result;
+}
+
+// Overload without physical_system_descriptor - uses an empty PSD (no validation)
+ValidGroupingsMap PhysicalGroupingDescriptor::get_valid_groupings_for_mgd(
+    const MeshGraphDescriptor& mesh_graph_descriptor) const {
+    return get_valid_groupings_for_mgd(mesh_graph_descriptor, get_empty_psd());
 }
 
 // =============================================================================
