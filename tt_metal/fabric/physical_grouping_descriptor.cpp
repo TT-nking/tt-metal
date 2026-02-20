@@ -543,12 +543,16 @@ uint32_t PhysicalGroupingDescriptor::get_grouping_asic_count(const std::string& 
 }
 
 std::vector<GroupingInfo> PhysicalGroupingDescriptor::get_groupings_by_name(const std::string& grouping_name) const {
-    auto it = resolved_groupings_cache_.find(grouping_name);
-    if (it != resolved_groupings_cache_.end()) {
-        return it->second;
+    // Cache is keyed by type, not name, so we need to search through all groupings
+    std::vector<GroupingInfo> result;
+    for (const auto& [type, groupings] : resolved_groupings_cache_) {
+        for (const auto& grouping : groupings) {
+            if (grouping.name == grouping_name) {
+                result.push_back(grouping);
+            }
+        }
     }
-    // Fallback: return empty vector if not found in cache
-    return {};
+    return result;
 }
 
 std::vector<GroupingInfo> PhysicalGroupingDescriptor::get_groupings_by_type(const std::string& grouping_type) const {
@@ -2542,7 +2546,100 @@ std::string build_pgd_mapping_failure_message(
         unmapped_count);
 }
 
+MappingResult<FlattenedMeshNodeInfo, AsicID> solve_for_many_groupings_to_psd(
+    const AdjacencyGraph<FlattenedMeshNodeInfo>& flat_mesh,
+    const AdjacencyGraph<AsicID>& physical_graph,
+    const tt::tt_metal::PhysicalSystemDescriptor& physical_system_descriptor) {
+    MappingConstraints<FlattenedMeshNodeInfo, AsicID> constraints = {};
+
+    // Enumerate as many flat meshes as possible to fit in the physical graph
+    size_t num_meshes_to_fit = physical_graph.get_nodes().size() / flat_mesh.get_nodes().size();
+
+    // Step 1: Get adjacency map directly from flat_mesh and find max unique_id
+    const auto& original_adj_map = flat_mesh.get_adjacency_map();
+    uint32_t max_unique_id = 0;
+    for (const auto& node : flat_mesh.get_nodes()) {
+        if (node.unique_id > max_unique_id) {
+            max_unique_id = node.unique_id;
+        }
+    }
+    uint32_t unique_id_offset = max_unique_id + 1;
+
+    // Step 3: Copy adjacency map for each copy and modify unique_ids
+    AdjacencyGraph<FlattenedMeshNodeInfo>::AdjacencyMap combined_adj_map;
+
+    for (size_t copy_idx = 0; copy_idx < num_meshes_to_fit; ++copy_idx) {
+        uint32_t offset = unique_id_offset * copy_idx;
+
+        // Copy the adjacency map
+        AdjacencyGraph<FlattenedMeshNodeInfo>::AdjacencyMap copy_adj_map = original_adj_map;
+
+        // Modify unique_ids in the copied map
+        AdjacencyGraph<FlattenedMeshNodeInfo>::AdjacencyMap modified_adj_map;
+        for (const auto& [node, neighbors] : copy_adj_map) {
+            // Create node with modified unique_id
+            FlattenedMeshNodeInfo modified_node = node;
+            modified_node.unique_id = node.unique_id + offset;
+
+            // Modify unique_ids in neighbor list
+            std::vector<FlattenedMeshNodeInfo> modified_neighbors;
+            modified_neighbors.reserve(neighbors.size());
+            for (const auto& neighbor : neighbors) {
+                FlattenedMeshNodeInfo modified_neighbor = neighbor;
+                modified_neighbor.unique_id = neighbor.unique_id + offset;
+                modified_neighbors.push_back(modified_neighbor);
+            }
+
+            modified_adj_map[modified_node] = modified_neighbors;
+        }
+
+        // Join this copy into the combined map
+        combined_adj_map.insert(modified_adj_map.begin(), modified_adj_map.end());
+    }
+
+    // Step 4: Create adjacency graph from combined map
+    AdjacencyGraph<FlattenedMeshNodeInfo> all_meshes(combined_adj_map);
+
+    // Build trait maps for target nodes (from joined flattened mesh)
+    std::map<FlattenedMeshNodeInfo, uint32_t> target_tray_traits;
+    std::map<FlattenedMeshNodeInfo, uint32_t> target_location_traits;
+
+    for (const auto& node : all_meshes.get_nodes()) {
+        if (node.tray_id == 0 || node.asic_location == 0) {
+            continue;
+        }
+        target_tray_traits[node] = node.tray_id;
+        target_location_traits[node] = node.asic_location;
+    }
+
+    // Build trait maps for global nodes (from physical graph)
+    std::map<AsicID, uint32_t> global_tray_traits;
+    std::map<AsicID, uint32_t> global_location_traits;
+
+    for (const auto& asic_id : physical_graph.get_nodes()) {
+        TrayID tray_id = physical_system_descriptor.get_tray_id(asic_id);
+        ASICLocation asic_location = physical_system_descriptor.get_asic_location(asic_id);
+        global_tray_traits[asic_id] = *tray_id;
+        global_location_traits[asic_id] = *asic_location;
+    }
+
+    // Add trait constraints for tray_id and asic_location
+    TT_FATAL(
+        constraints.add_required_trait_constraint<uint32_t>(target_tray_traits, global_tray_traits),
+        "Internal error: Failed to add required trait constraint for tray_id");
+    TT_FATAL(
+        constraints.add_required_trait_constraint<uint32_t>(target_location_traits, global_location_traits),
+        "Internal error: Failed to add required trait constraint for asic_location");
+
+    return solve_topology_mapping(all_meshes, physical_graph, constraints, ConnectionValidationMode::RELAXED, true);
+}
 }  // namespace
+
+std::unordered_set<tt::tt_metal::AsicID> PhysicalGroupingDescriptor::find_any_in_psd(
+    const GroupingInfo& grouping, const tt::tt_metal::PhysicalSystemDescriptor& physical_system_descriptor) const {
+    std::vector<std::string> errors;
+    return find_any_in_psd(grouping, physical_system_descriptor, errors);
+}
 
 std::unordered_set<tt::tt_metal::AsicID> PhysicalGroupingDescriptor::find_any_in_psd(
     const GroupingInfo& grouping,
