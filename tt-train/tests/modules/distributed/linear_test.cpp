@@ -154,7 +154,7 @@ TEST_F(N300TensorParallelLinearTest, RowParallelLinearNoBiasNotInputParallel) {
 
 TEST_F(N300TensorParallelLinearTest, RowParallelLinearHasBiasInputParallel) {
     // Test failing with watcher enabled, github issue #30521
-    SKIP_FOR_WATCHER();
+    // SKIP_FOR_WATCHER();
 
     uint32_t in_features = 64U;
     uint32_t out_features = 64U;
