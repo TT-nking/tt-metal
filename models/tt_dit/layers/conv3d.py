@@ -138,6 +138,7 @@ class ContextParallelConv3d(Module):
 
         weight = state.get("weight")
         if weight is not None:
+            self.conv_config.alignment = alignment
             state["weight"] = weight
 
         if "bias" in state:
