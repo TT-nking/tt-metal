@@ -19,7 +19,7 @@ void py_module(nb::module_& mod) {
     // Single Device Creation API
     mod.def(
         "create_global_semaphore",
-        nb::overload_cast<IDevice*, const CoreRangeSet&, uint32_t, BufferType>(
+        nb::overload_cast<IDevice*, const CoreRangeSet&, std::optional<uint32_t>, BufferType>(
             &ttnn::global_semaphore::create_global_semaphore),
         nb::arg("device"),
         nb::arg("cores"),
@@ -38,7 +38,7 @@ void py_module(nb::module_& mod) {
     // MeshDevice Creation API
     mod.def(
         "create_global_semaphore",
-        nb::overload_cast<MeshDevice*, const CoreRangeSet&, uint32_t, BufferType>(
+        nb::overload_cast<MeshDevice*, const CoreRangeSet&, std::optional<uint32_t>, BufferType>(
             &ttnn::global_semaphore::create_global_semaphore),
         nb::arg("mesh_device"),
         nb::arg("cores"),
