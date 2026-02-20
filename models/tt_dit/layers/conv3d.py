@@ -116,8 +116,9 @@ class ContextParallelConv3d(Module):
                 self.kernel_size[2],
             ],
             device=mesh_device,
-            pad_value=0,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
             on_host=True,
+            pad_value=0,
         )
         self.bias = Parameter(total_shape=[1, self.out_channels], device=mesh_device, pad_value=0) if bias else None
 

@@ -278,12 +278,14 @@ class WanCausalConv3d(Module):
         self.weight = Parameter(
             total_shape=[
                 self.out_channels,
-                self.in_channels,
+                self.unpadded_in_channels,
                 self.kernel_size[0],
                 self.kernel_size[1],
                 self.kernel_size[2],
             ],
             device=mesh_device,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            on_host=True,
             pad_value=0,
         )
         self.bias = Parameter(total_shape=[1, self.out_channels], device=mesh_device, pad_value=0)
@@ -654,6 +656,7 @@ class WanConv2d(Module):
         super().__init__()
 
         self.in_channels = in_channels
+        self.unpadded_in_channels = in_channels
         self.unpadded_out_channels = out_channels
         self.TILE_WIDTH = 32
         self.out_channels = self.TILE_WIDTH if out_channels < self.TILE_WIDTH else out_channels
@@ -699,7 +702,19 @@ class WanConv2d(Module):
         )
 
         d = self.kernel_size[0] * self.kernel_size[1] * self.kernel_size[2] * self.in_channels
-        self.weight = Parameter(total_shape=[d, self.out_channels], device=mesh_device, pad_value=0)
+        self.weight = Parameter(
+            total_shape=[
+                self.out_channels,
+                self.unpadded_in_channels,
+                self.kernel_size[0],
+                self.kernel_size[1],
+                self.kernel_size[2],
+            ],
+            device=mesh_device,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            on_host=True,
+            pad_value=0,
+        )
         self.bias = Parameter(total_shape=[1, self.out_channels], device=mesh_device, pad_value=0)
 
         self.mask_cache = {}
@@ -784,6 +799,7 @@ class WanConv2d(Module):
             input_tensor=x_BTHWC,
             weight_tensor=self.weight.data,
             bias_tensor=self.bias.data,
+            device=self.mesh_device,
             config=self.conv_config,
             output_channels=self.out_channels,
             kernel_size=self.kernel_size,
