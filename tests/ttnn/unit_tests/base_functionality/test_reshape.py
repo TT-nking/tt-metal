@@ -21,7 +21,7 @@ from models.common.utility_functions import is_watcher_enabled, skip_with_watche
     ],
 )
 @pytest.mark.parametrize("enable_cache", [True])
-@skip_with_watcher("Skipping test with watcher enabled due to failure, see github issue #37096")
+# @skip_with_watcher("Skipping test with watcher enabled due to failure, see github issue #37096")
 def test_ttnn_reshape_with_cache(device, enable_cache, input_shape, output_shape):
     if not enable_cache:
         device.disable_program_cache()
