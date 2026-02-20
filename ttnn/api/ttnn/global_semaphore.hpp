@@ -19,25 +19,25 @@ struct MultiDeviceGlobalSemaphore {
 
 // Single Device Creation API
 GlobalSemaphore create_global_semaphore(
-    IDevice* device, const CoreRangeSet& cores, uint32_t initial_value, BufferType buffer_type = BufferType::L1);
+    IDevice* device, const CoreRangeSet& cores, std::optional<uint32_t> initial_value, BufferType buffer_type = BufferType::L1);
 
 // MeshDevice Creation API
 GlobalSemaphore create_global_semaphore(
     MeshDevice* mesh_device,
     const CoreRangeSet& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type = BufferType::L1);
 
 // Multi-device Creation API
 MultiDeviceGlobalSemaphore create_global_semaphore(
     const std::vector<IDevice*>& devices,
     const CoreRangeSet& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type = BufferType::L1);
 MultiDeviceGlobalSemaphore create_global_semaphore_with_same_address(
     const std::vector<IDevice*>& devices,
     const CoreRangeSet& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type,
     uint32_t attempts,
     bool search_max = false);

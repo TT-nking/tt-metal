@@ -26,7 +26,7 @@ namespace tt::tt_metal {
 GlobalSemaphore::GlobalSemaphore(
     IDevice* device,
     const CoreRangeSet& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type,
     std::optional<uint64_t> address) :
     device_(device), cores_(cores) {
@@ -36,14 +36,14 @@ GlobalSemaphore::GlobalSemaphore(
 GlobalSemaphore::GlobalSemaphore(
     IDevice* device,
     CoreRangeSet&& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type,
     std::optional<uint64_t> address) :
     device_(device), cores_(std::move(cores)) {
     this->setup_buffer(initial_value, buffer_type, address);
 }
 
-void GlobalSemaphore::setup_buffer(uint32_t initial_value, BufferType buffer_type, std::optional<uint64_t> address) {
+void GlobalSemaphore::setup_buffer(std::optional<uint32_t> initial_value, BufferType buffer_type, std::optional<uint64_t> address) {
     TT_FATAL(
         buffer_type == BufferType::L1 or buffer_type == BufferType::L1_SMALL,
         "Global semaphore can only be created for L1 buffer types");
@@ -61,7 +61,9 @@ void GlobalSemaphore::setup_buffer(uint32_t initial_value, BufferType buffer_typ
     };
     buffer_ = distributed::AnyBuffer::create(sem_shard_config, address);
 
-    this->reset_semaphore_value(initial_value);
+    if (initial_value.has_value()) {
+        this->reset_semaphore_value(initial_value.value());
+    }
 }
 
 IDevice* GlobalSemaphore::device() const { return device_; }

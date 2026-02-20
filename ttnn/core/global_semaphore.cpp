@@ -16,7 +16,7 @@ MultiDeviceGlobalSemaphore::MultiDeviceGlobalSemaphore(size_t num_devices) {
 }
 
 MultiDeviceGlobalSemaphore create_global_semaphore(
-    const std::vector<IDevice*>& devices, const CoreRangeSet& cores, uint32_t initial_value, BufferType buffer_type) {
+    const std::vector<IDevice*>& devices, const CoreRangeSet& cores, std::optional<uint32_t> initial_value, BufferType buffer_type) {
     MultiDeviceGlobalSemaphore multi_device_global_semaphore(devices.size());
     auto& global_semaphores = multi_device_global_semaphore.global_semaphores;
     for (auto* device : devices) {
@@ -27,7 +27,7 @@ MultiDeviceGlobalSemaphore create_global_semaphore(
 MultiDeviceGlobalSemaphore create_global_semaphore_with_same_address(
     const std::vector<IDevice*>& devices,
     const CoreRangeSet& cores,
-    uint32_t initial_value,
+    std::optional<uint32_t> initial_value,
     BufferType buffer_type,
     uint32_t attempts,
     bool search_max) {
@@ -90,12 +90,12 @@ MultiDeviceGlobalSemaphore create_global_semaphore_with_same_address(
 }
 
 GlobalSemaphore create_global_semaphore(
-    IDevice* device, const CoreRangeSet& cores, uint32_t initial_value, BufferType buffer_type) {
+    IDevice* device, const CoreRangeSet& cores, std::optional<uint32_t> initial_value, BufferType buffer_type) {
     return CreateGlobalSemaphore(device, cores, initial_value, buffer_type);
 }
 
 GlobalSemaphore create_global_semaphore(
-    MeshDevice* mesh_device, const CoreRangeSet& cores, uint32_t initial_value, BufferType buffer_type) {
+    MeshDevice* mesh_device, const CoreRangeSet& cores, std::optional<uint32_t> initial_value, BufferType buffer_type) {
     return CreateGlobalSemaphore(mesh_device, cores, initial_value, buffer_type);
 }
 

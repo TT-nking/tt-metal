@@ -328,7 +328,7 @@ uint32_t CreateSemaphore(
  */
 // clang-format on
 GlobalSemaphore CreateGlobalSemaphore(
-    IDevice* device, const CoreRangeSet& cores, uint32_t initial_value, BufferType buffer_type = BufferType::L1);
+    IDevice* device, const CoreRangeSet& cores, std::optional<uint32_t> initial_value, BufferType buffer_type = BufferType::L1);
 
 // clang-format off
 /**
@@ -346,7 +346,7 @@ GlobalSemaphore CreateGlobalSemaphore(
  */
 // clang-format on
 GlobalSemaphore CreateGlobalSemaphore(
-    IDevice* device, CoreRangeSet&& cores, uint32_t initial_value, BufferType buffer_type = BufferType::L1);
+    IDevice* device, CoreRangeSet&& cores, std::optional<uint32_t> initial_value, BufferType buffer_type = BufferType::L1);
 
 // clang-format off
 /**
