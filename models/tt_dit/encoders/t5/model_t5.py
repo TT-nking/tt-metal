@@ -86,6 +86,7 @@ class T5Encoder(Module):
 
         self.token_embeddings = RelativeTextEmbeddings(config, self.mesh_device, self.ccl_manager, self.parallel_config)
         self.encoder = T5Stack(config, self.mesh_device, self.ccl_manager, self.parallel_config)
+        self._legacy_ln_config = ttnn.LayerNormDefaultProgramConfig(legacy_reduction=True, legacy_rsqrt=True)
         self.final_layer_norm = RMSNorm(  # final layer norm
             embedding_dim=self.config.embed_dim,
             norm_eps=self.config.layer_norm_eps,
@@ -116,7 +117,7 @@ class T5Encoder(Module):
 
         hidden_states = self.encoder(embeddings, position_bias)
 
-        output = self.final_layer_norm(hidden_states[-1])
+        output = self.final_layer_norm(hidden_states[-1], program_config=self._legacy_ln_config)
         hidden_states.append(output)
         return hidden_states
 
@@ -171,6 +172,7 @@ class T5FF(Module):
         self.ccl_manager = ccl_manager
         self.parallel_config = parallel_config
 
+        self._legacy_ln_config = ttnn.LayerNormDefaultProgramConfig(legacy_reduction=True, legacy_rsqrt=True)
         self.layer_norm = RMSNorm(
             embedding_dim=self.config.embed_dim,
             norm_eps=self.config.layer_norm_eps,
@@ -186,7 +188,7 @@ class T5FF(Module):
     def forward(
         self, hidden_states: ttnn.Tensor, ccl_manager: CCLManager, parallel_config: EncoderParallelConfig
     ) -> ttnn.Tensor:
-        normalized_hidden_states = self.layer_norm(hidden_states)
+        normalized_hidden_states = self.layer_norm(hidden_states, program_config=self._legacy_ln_config)
         gated_hidden_states = self.dense_gated_dense(normalized_hidden_states)
         return gated_hidden_states
 
@@ -349,6 +351,7 @@ class T5Attention(Module):
             mesh_axis=self.parallel_config.tensor_parallel.mesh_axis,
         )
 
+        self._legacy_ln_config = ttnn.LayerNormDefaultProgramConfig(legacy_reduction=True, legacy_rsqrt=True)
         self.layer_norm = RMSNorm(
             embedding_dim=self.config.embed_dim,
             norm_eps=self.config.layer_norm_eps,
@@ -371,7 +374,7 @@ class T5Attention(Module):
     ) -> ttnn.Tensor:
         batch_size, seq_length, _ = hidden_states.shape
 
-        hidden_states = self.layer_norm(hidden_states)
+        hidden_states = self.layer_norm(hidden_states, program_config=self._legacy_ln_config)
 
         q = self.q_proj(hidden_states)
         k = self.k_proj(hidden_states)
@@ -388,7 +391,7 @@ class T5Attention(Module):
 
         scores = ttnn.matmul(q, k)
         scores = scores + position_bias
-        attn_weights = ttnn.softmax(scores, dim=-1)
+        attn_weights = ttnn.softmax(scores, dim=-1, numeric_stable=False)
         attn_output = ttnn.matmul(attn_weights, v)
         attn_output = ttnn.transformer.concatenate_heads(attn_output)
 
