@@ -276,8 +276,8 @@ void kernel_main() {
                     if constexpr (qk_num_blocks > 1 && reuse_k) {
                         // Pipelined K: stream from DRAM block-by-block into K CB.
                         // Compute starts QK on the first block while later blocks
-                        // are still being fetched.  V is copied from K's L1 below
-                        // with a barrier before the next chunk overwrites it.
+                        // are still being fetched.
+                        // Non-paged equivalent: read_kv_mask_chunks_pipelined() in dataflow_common.hpp
                         uint32_t block_tiles = qk_in0_block_w * Sk_chunk_t_dynamic;
                         for (uint32_t block = 0; block < qk_num_blocks; ++block) {
                             cb_reserve_back(cb_k_in, block_tiles);
@@ -359,23 +359,10 @@ void kernel_main() {
 
                 {
                     if constexpr (reuse_k) {
-                        // Copy V from K's L1 into V CB.  The barrier after
-                        // these reads guarantees V is fully copied before we
-                        // loop back and overwrite K's L1 with the next chunk.
-                        // Compute's cb_pop_front on K only moves a pointer and
-                        // never clears L1, so this is safe regardless of pop timing.
-                        cb_reserve_back(cb_v_in, v_chunk_tiles);
-                        uint32_t v_write_ptr = get_write_ptr(cb_v_in);
-                        for (uint32_t row = 0; row < Sk_chunk_t_dynamic; ++row) {
-                            uint64_t k_read_ptr = k_base_read_ptr + row * k_tile_bytes;
-                            for (uint32_t col = 0; col < vDHt; ++col) {
-                                noc_async_read(k_read_ptr, v_write_ptr, v_tile_bytes);
-                                v_write_ptr += v_tile_bytes;
-                                k_read_ptr += Sk_chunk_t_dynamic * k_tile_bytes;
-                            }
-                        }
+                        copy_v_from_k_cb<vDHt, cb_v_in>(
+                            k_base_read_ptr, Sk_chunk_t_dynamic, v_chunk_tiles, k_tile_bytes, v_tile_bytes);
                     } else {
-                        // V is an independent tensor
+                        // V is an independent tensor with its own layout (width = vDHt, not DHt)
                         cb_reserve_back(cb_v_in, v_chunk_tiles);
                         uint32_t v_write_ptr = get_write_ptr(cb_v_in);
                         barrier_count = 0;
@@ -403,9 +390,9 @@ void kernel_main() {
                                 }
                             }
                         }
+                        noc_async_read_barrier();
+                        cb_push_back(cb_v_in, v_chunk_tiles);
                     }
-                    noc_async_read_barrier();
-                    cb_push_back(cb_v_in, v_chunk_tiles);
                 }
 
             }
