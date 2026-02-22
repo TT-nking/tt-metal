@@ -84,6 +84,7 @@ def prefill_forward(
         rope_mats_sliced = rope_mats
     tt_q_orig = tt_q
     tt_k_orig = tt_k
+    print(f"tt_q shape: {tt_q.shape}, tt_k shape: {tt_k.shape}, rope_mats_sliced[0] shape: {rope_mats_sliced[0].shape}")
     tt_q = apply_rope(tt_q, rope_mats_sliced, transformation_mat, is_decode_mode=False)
     tt_k = apply_rope(tt_k, rope_mats_sliced, transformation_mat, is_decode_mode=False)
     tt_q_orig.deallocate(True)

@@ -73,7 +73,7 @@ def _process_prefill_chunk(
     output_tile = ttnn.Tile([32, 32])
     # Gate projection
     logger.info(
-        f"Running prefill gate projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.gate_proj.shape[3])}"
+        f"Running prefill gate projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.gate_proj.shape[3], hidden_states_4D.shape[3])}"
     )
     gate = ttnn.sparse_matmul(
         hidden_states_4D,
@@ -82,7 +82,9 @@ def _process_prefill_chunk(
         nnz=num_experts_per_tok,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         output_tile=output_tile,
-        program_config=program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2], weights.gate_proj.shape[3]),
+        program_config=program_config.get_prefill_gate_up_config(
+            hidden_states_4D.shape[2], weights.gate_proj.shape[3], hidden_states_4D.shape[3]
+        ),
         dtype=activation_dtype,
     )
     ttnn.synchronize_device(hidden_states_4D.device())
@@ -94,7 +96,7 @@ def _process_prefill_chunk(
     gate = ttnn.add(gate, bias_transposed, output_tensor=gate)
 
     logger.info(
-        f"Running prefill up projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.up_proj.shape[3])}"
+        f"Running prefill up projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.up_proj.shape[3], hidden_states_4D.shape[3])}"
     )
     # Up projection
     up = ttnn.sparse_matmul(
@@ -104,7 +106,9 @@ def _process_prefill_chunk(
         nnz=num_experts_per_tok,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
         output_tile=output_tile,
-        program_config=program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2], weights.up_proj.shape[3]),
+        program_config=program_config.get_prefill_gate_up_config(
+            hidden_states_4D.shape[2], weights.up_proj.shape[3], hidden_states_4D.shape[3]
+        ),
         dtype=activation_dtype,
     )
     ttnn.synchronize_device(hidden_states_4D.device())
@@ -152,7 +156,7 @@ def _process_prefill_chunk(
     next_states_reduced_list = []
     for i, down_input_split in enumerate(down_input_list):
         logger.info(
-            f"Running prefill down projection for split {i} with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_down_config(down_input_split.shape[2] * num_experts_per_tok, weights.down_proj.shape[3])}"
+            f"Running prefill down projection for split {i} with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_down_config(down_input_split.shape[2] * num_experts_per_tok, weights.down_proj.shape[3], down_input_split.shape[3])}"
         )
         down = ttnn.sparse_matmul(
             down_input_split,
@@ -163,7 +167,7 @@ def _process_prefill_chunk(
             output_tile=output_tile,
             is_input_a_sparse=True,
             program_config=program_config.get_prefill_down_config(
-                down_input_split.shape[2], weights.down_proj.shape[-1]
+                down_input_split.shape[2], weights.down_proj.shape[-1], down_input_split.shape[3]
             ),
             dtype=activation_dtype,
         )

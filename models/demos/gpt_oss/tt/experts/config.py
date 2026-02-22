@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import ttnn
 
+from ...utils.general_utils import div_up
+
 
 @dataclass
 class ExpertConfig:
@@ -130,48 +132,64 @@ class ProgramConfig:
             out_block_h=1,
             out_block_w=1,
             per_core_M=max(32, m) // 32,
-            per_core_N=int(math.ceil(n / 32)) // (core_x * core_y),
+            per_core_N=max(int(math.ceil(n / 32)) // (core_x * core_y), 1),
             fuse_batch=False,
             fused_activation=None,
             mcast_in0=True,
         )
 
-    def get_decode_gate_up_config(self, m: int, n: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
+    def get_decode_gate_up_config(self, m: int, n: int, k: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
         """Get program config for decode gate/up projections"""
+        in_block_w = self.decode_gate_up_in0_block_w
+        while div_up(k, 32) % in_block_w != 0 and in_block_w > 1:
+            in_block_w -= 1
+
         return self._build_matmul_config(
             self.decode_gate_up_cores,
             m,
             n,
-            in0_block_w=self.decode_gate_up_in0_block_w,
+            in0_block_w=in_block_w,
             out_subblock_w=self.decode_gate_up_subblock_w,
         )
 
-    def get_decode_down_config(self, m: int, n: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
+    def get_decode_down_config(self, m: int, n: int, k: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
         """Get program config for decode down projection"""
+        in_block_w = self.decode_down_in0_block_w
+        while div_up(k, 32) % in_block_w != 0 and in_block_w > 1:
+            in_block_w -= 1
+
         return self._build_matmul_config(
             self.decode_down_cores,
             m,
             n,
-            in0_block_w=self.decode_down_in0_block_w,
+            in0_block_w=in_block_w,
             out_subblock_w=self.decode_down_subblock_w,
         )
 
-    def get_prefill_gate_up_config(self, m: int, n: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
+    def get_prefill_gate_up_config(self, m: int, n: int, k: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
         """Get program config for prefill gate/up projections"""
+        in_block_w = self.prefill_gate_up_in0_block_w
+        while div_up(k, 32) % in_block_w != 0 and in_block_w > 1:
+            in_block_w -= 1
+
         return self._build_matmul_config(
             self.prefill_gate_up_cores,
             m,
             n,
-            in0_block_w=self.prefill_gate_up_in0_block_w,
+            in0_block_w=in_block_w,
             out_subblock_w=self.prefill_gate_up_subblock_w,
         )
 
-    def get_prefill_down_config(self, m: int, n: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
+    def get_prefill_down_config(self, m: int, n: int, k: int) -> ttnn.MatmulMultiCoreReuseMultiCast1DProgramConfig:
         """Get program config for prefill down projection"""
+        in_block_w = self.prefill_down_in0_block_w
+        while div_up(k, 32) % in_block_w != 0 and in_block_w > 1:
+            in_block_w -= 1
+
         return self._build_matmul_config(
             self.prefill_down_cores,
             m,
             n,
-            in0_block_w=self.prefill_down_in0_block_w,
+            in0_block_w=in_block_w,
             out_subblock_w=self.prefill_down_subblock_w,
         )

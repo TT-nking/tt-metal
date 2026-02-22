@@ -18,6 +18,7 @@ file(
     all_reduce_async/device/kernels/*
     all_to_all_async/device/kernels/*
     all_to_all_async_generic/device/kernels/*
+    copy_submesh_async/device/kernels/*
     all_to_all_dispatch_metadata/device/kernels/*
     llama_all_gather_matmul_async/device/kernels/*
     llama_reduce_scatter/device/kernels/*
@@ -94,6 +95,9 @@ target_sources(
         all_gather_matmul_async/all_gather_matmul_async.cpp
         all_gather_matmul_async/device/all_gather_matmul_async_device_operation.cpp
         all_gather_matmul_async/device/all_gather_matmul_async_program_factory.cpp
+        copy_submesh_async/copy_submesh_async_generic.cpp
+        copy_submesh_async/device/copy_submesh_async_generic_device_operation.cpp
+        copy_submesh_async/device/copy_submesh_async_generic_program_factory.cpp
         strided_all_gather_minimal_matmul_async/strided_all_gather_minimal_matmul_async.cpp
         strided_all_gather_minimal_matmul_async/device/strided_all_gather_minimal_matmul_async_op.cpp
         strided_all_gather_minimal_matmul_async/device/strided_all_gather_minimal_matmul_async_program.cpp
