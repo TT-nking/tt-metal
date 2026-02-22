@@ -3,6 +3,8 @@
 
 """Prefill forward pass for experts (seq_len>1)."""
 
+from loguru import logger
+
 import ttnn
 from models.demos.gpt_oss.config import Mode
 
@@ -70,6 +72,9 @@ def _process_prefill_chunk(
     num_experts_per_tok = (config.num_experts // ep) * group_size
     output_tile = ttnn.Tile([32, 32])
     # Gate projection
+    logger.info(
+        f"Running prefill gate projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.gate_proj.shape[3])}"
+    )
     gate = ttnn.sparse_matmul(
         hidden_states_4D,
         weights.gate_proj,
@@ -80,12 +85,17 @@ def _process_prefill_chunk(
         program_config=program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2], weights.gate_proj.shape[3]),
         dtype=activation_dtype,
     )
+    ttnn.synchronize_device(hidden_states_4D.device())
+    logger.info("Completed prefill gate projection")
     # Note: transpose/reshape operations return views - do not deallocate originals
     gate = ttnn.transpose(gate, 1, 3)
     gate = ttnn.reshape(gate, (batch_size, config.num_experts, seq_len, weights.intermediate_size_per_device))
     bias_transposed = ttnn.transpose(weights.gate_proj_bias, 1, 0)
     gate = ttnn.add(gate, bias_transposed, output_tensor=gate)
 
+    logger.info(
+        f"Running prefill up projection with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2] * num_experts_per_tok, weights.up_proj.shape[3])}"
+    )
     # Up projection
     up = ttnn.sparse_matmul(
         hidden_states_4D,
@@ -97,6 +107,8 @@ def _process_prefill_chunk(
         program_config=program_config.get_prefill_gate_up_config(hidden_states_4D.shape[2], weights.up_proj.shape[3]),
         dtype=activation_dtype,
     )
+    ttnn.synchronize_device(hidden_states_4D.device())
+    logger.info("Completed prefill up projection")
     hidden_states_4D.deallocate(True)
     # Note: sparsity_layout is created from repeat(prefill_sparsity), and prefill_sparsity
     # is reused later (line 123, 151). Don't deallocate as repeat may return a view/alias.
@@ -139,6 +151,9 @@ def _process_prefill_chunk(
     # Process each split
     next_states_reduced_list = []
     for i, down_input_split in enumerate(down_input_list):
+        logger.info(
+            f"Running prefill down projection for split {i} with num_experts_per_tok={num_experts_per_tok}, program_config={program_config.get_prefill_down_config(down_input_split.shape[2] * num_experts_per_tok, weights.down_proj.shape[3])}"
+        )
         down = ttnn.sparse_matmul(
             down_input_split,
             weights.down_proj,
@@ -152,6 +167,8 @@ def _process_prefill_chunk(
             ),
             dtype=activation_dtype,
         )
+        ttnn.synchronize_device(down_input_split.device())
+        logger.info(f"Completed prefill down projection for split {i}")
         down_input_split.deallocate(True)
 
         # Apply bias and routing weights

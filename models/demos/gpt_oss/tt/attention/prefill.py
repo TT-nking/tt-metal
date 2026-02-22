@@ -55,6 +55,9 @@ def prefill_forward(
     total_seq_len = hidden_states.shape[-2]
     hidden_size = hidden_states.shape[-1]
     seq_len = total_seq_len // batch_size  # Per-user sequence length
+    print(
+        f"Prefill forward: batch_size={batch_size}, total_seq_len={total_seq_len}, seq_len={seq_len}, hidden_size={hidden_size}"
+    )
 
     # Validate prefill mode
     if seq_len <= 1:

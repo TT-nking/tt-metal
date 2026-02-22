@@ -48,11 +48,11 @@ class ProgramConfig:
     """
 
     # Core grid sizes for decode
-    decode_gate_up_cores: tuple[int, int] = (3, 4)
+    decode_gate_up_cores: tuple[int, int] = (3, 5)
     decode_down_cores: tuple[int, int] = (5, 6)
 
     # Core grid sizes for prefill
-    prefill_gate_up_cores: tuple[int, int] = (3, 4)
+    prefill_gate_up_cores: tuple[int, int] = (3, 5)
     prefill_down_cores: tuple[int, int] = (5, 6)
 
     # Sparse matmul subblock widths

@@ -37,3 +37,10 @@ std::vector<uint32_t> pack_as_bfp_tiles(
     bool row_major_input,
     bool is_exp_a,
     const std::optional<tt::tt_metal::Tile>& tile = std::nullopt);
+
+template <tt::DataFormat BfpFormat, typename T>
+std::vector<uint32_t> pack_as_bfp_tiles_mt(
+    tt::stl::Span<const T> input_data,
+    bool row_major_input,
+    bool is_exp_a,
+    const std::optional<tt::tt_metal::Tile>& tile = std::nullopt);

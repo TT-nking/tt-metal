@@ -26,7 +26,7 @@ constexpr int log2(int n) { return (n <= 1) ? 0 : std::bit_width(static_cast<uns
 template <typename T>
 std::vector<uint32_t> pack_as_bfp4_tiles(
     tt::stl::Span<const T> data, bool row_major_input, bool is_exp_a, const std::optional<tt::tt_metal::Tile>& tile) {
-    return pack_as_bfp_tiles<tt::DataFormat::Bfp4_b>(data, row_major_input, is_exp_a, tile);
+    return pack_as_bfp_tiles_mt<tt::DataFormat::Bfp4_b>(data, row_major_input, is_exp_a, tile);
 }
 
 template std::vector<uint32_t> pack_as_bfp4_tiles<bfloat16>(
