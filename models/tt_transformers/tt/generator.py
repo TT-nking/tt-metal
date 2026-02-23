@@ -36,30 +36,6 @@ from models.tt_transformers.tt.common import (
 # Maximum total sequence length for batched prefill (batch_size * per_user_seq_len)
 MAX_BATCHED_PREFILL_SEQ_LEN = 128 * 1024
 
-SAMPLING_PARAM_FIELDS = tuple(f.name for f in fields(SamplingParams))
-
-
-def _broadcast_formatted_sampling_params(formatted_sampling_params: SamplingParams, idx: int) -> SamplingParams:
-    """
-    Create a new SamplingParams where each list field is broadcast to a full (length-32) list,
-    taking the value from `idx`. Does not mutate the input.
-    """
-    slot_len = 32  # sampling only supports batch_size=32
-    kwargs = {}
-    for f in fields(SamplingParams):
-        value = getattr(formatted_sampling_params, f.name)
-        # `format_sampling_params` may convert scalar fields to 1-element lists.
-        # Treat short lists as broadcast scalars rather than per-request arrays.
-        if isinstance(value, List):
-            chosen = value[idx] if idx < len(value) else value[0]
-        else:
-            chosen = value
-        if chosen is None:
-            kwargs[f.name] = None
-        else:
-            kwargs[f.name] = [chosen] * slot_len
-    return SamplingParams(**kwargs)
-
 
 def _apply_prefill_sampling_state(
     model_instance,
@@ -558,7 +534,7 @@ class Generator(WarmupForwardMixin):
                     if sampling_enabled:
                         sampling_executed = True
                         per_request_params = format_sampling_params(
-                            _broadcast_formatted_sampling_params(sampling_params, local_idx), 32
+                            broadcast_sampling_params(sampling_params, local_idx, slot_len=32), 32
                         )
                         _apply_prefill_sampling_state(
                             self.model[model_id],
