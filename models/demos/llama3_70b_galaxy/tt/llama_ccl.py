@@ -1051,9 +1051,9 @@ class TT_CCL:
         num_links = 4
         # Seeing better performance for longer sequence lengths with num_workers_per_link = 4
         if seqlen > 128:
-            num_workers_per_link = 1
-        else:
             num_workers_per_link = 4
+        else:
+            num_workers_per_link = 1
         ttnn_tensor_out = ttnn.experimental.reduce_scatter_minimal_async(
             input_tensor=input_tensor_mesh,
             persistent_output_buffers=persistent_buffers_list,

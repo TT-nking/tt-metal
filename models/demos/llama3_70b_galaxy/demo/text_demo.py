@@ -177,40 +177,6 @@ def create_tt_model(
     return tt_model_args, model, page_table, [tt_kv_cache]
 
 
-def make_page_table(page_params, batch_size):
-    """Build page table for paged KV cache (same logic as create_tt_model). Used when reusing a cached model."""
-    paged_attention_config = PagedAttentionConfig(
-        block_size=page_params["page_block_size"],
-        max_num_blocks=page_params["page_max_num_blocks"],
-    )
-    permutation = torch.randperm(paged_attention_config.max_num_blocks)
-    reverse_permutation = torch.argsort(permutation)
-    return reverse_permutation.reshape(batch_size, paged_attention_config.max_num_blocks // batch_size)
-
-
-@pytest.fixture(scope="session")
-def cached_llama_model_80l(mesh_device):
-    """
-    Session-scoped 80-layer model (no prefill_profile). Reused across tests to avoid
-    repeated weight loading and warmup. Tests with num_layers=80 and not prefill_profile
-    use this and build page_table per batch_size; others still call create_tt_model.
-    """
-    model_args, model, _page_table, tt_kv_cache = create_tt_model(
-        mesh_device,
-        instruct=True,
-        max_batch_size=32,
-        optimizations=LlamaOptimizations.performance,
-        max_seq_len=128 * 1024,
-        num_layers=80,
-        dummy_weights=False,
-        page_params={"page_block_size": 64, "page_max_num_blocks": 2048},
-        dtype=ttnn.bfloat8_b,
-        use_paged_kv_cache=True,
-        prefill_profile=False,
-    )
-    return (model_args, model, tt_kv_cache)
-
-
 # List of supported Parameters for demo.py
 #
 # input_prompts (string): input json file with prompts to process. See models/demos/llama3_70b_galaxy/demo/sample_prompts/*.json for list of input files
@@ -539,7 +505,7 @@ def cached_llama_model_80l(mesh_device):
             0.0,  # prefix_cached_ratio
         ),
         (  # prefill-profile-standard [default 4K seqlen] - Runs 1L prefill-only
-            "models/demos/llama3_70b_galaxy/demo/sample_prompts/input_data_long_1k.json",  # input_prompts
+            "models/demos/llama3_70b_galaxy/demo/sample_prompts/input_data_long_4k.json",  # input_prompts
             True,  # instruct mode
             1,  # repeat_batches
             128 * 1024,  # max_seq_len
@@ -560,7 +526,7 @@ def cached_llama_model_80l(mesh_device):
             0.0,  # prefix_cached_ratio
         ),
         (  # prefill-profile-prefix-caching - Runs 1L, Phase 2 only (prefix-cached prefill, signposts around Phase 2)
-            "models/demos/llama3_70b_galaxy/demo/sample_prompts/input_data_long_1k.json",  # input_prompts (need >=128 tokens for 50% cache to align to page_block_size 64)
+            "models/demos/llama3_70b_galaxy/demo/sample_prompts/input_data_long_4k.json",  # input_prompts (need >=128 tokens for 50% cache to align to page_block_size 64)
             True,  # instruct mode
             1,  # repeat_batches
             128 * 1024,  # max_seq_len
@@ -702,7 +668,7 @@ def cached_llama_model_80l(mesh_device):
     "device_params",
     [
         {
-            "trace_region_size": 184915840,  # match conftest (Hold 9 traces)
+            "trace_region_size": 184915840,
             "num_command_queues": 1,
             "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "worker_l1_size": 1345000,
@@ -718,9 +684,6 @@ def cached_llama_model_80l(mesh_device):
     ],
     indirect=True,
 )
-@pytest.mark.timeout(
-    1500
-)  # Device init + model load + prefill warmup (compile/trace for support_seqlens x batch 1,32) can exceed default 300s
 def test_demo_text(
     input_prompts,
     instruct,
@@ -889,36 +852,19 @@ def test_demo_text(
             [all_prompts[(j + i) % len(all_prompts)] for j in range(len(all_prompts))][:batch_size]
         )
 
-    use_cached_model = num_layers == 80 and not prefill_profile and paged_attention
-    if use_cached_model:
-        model_args, model, tt_kv_cache = request.getfixturevalue("cached_llama_model_80l")
-        cached_already_used = getattr(model, "_cached_model_already_used", False)
-        # Only sync+reset when reusing the model after a previous test. Skip on first use to
-        # avoid hang (sync right after fixture creation can block; CCL indices are already 0).
-        if cached_already_used:
-            ttnn.synchronize_device(mesh_device)
-            model.tt_ccl.reset_gather_and_buffer_idx()
-        page_table = make_page_table(page_params, batch_size)
-        # Zero KV cache so reused model starts clean for this test
-        model.switch_mode("prefill")
-        for layer in model.layers:
-            k_cache, v_cache = layer.attention.layer_past
-            k_cache = ttnn.mul(k_cache, 0, output_tensor=k_cache)
-            v_cache = ttnn.mul(v_cache, 0, output_tensor=v_cache)
-    else:
-        model_args, model, page_table, tt_kv_cache = create_tt_model(
-            mesh_device,
-            instruct=instruct,
-            max_batch_size=batch_size,
-            optimizations=optimizations,
-            max_seq_len=max_seq_len,
-            num_layers=num_layers,
-            dummy_weights=not instruct,
-            page_params=page_params,
-            dtype=ttnn.bfloat8_b,
-            use_paged_kv_cache=paged_attention,
-            prefill_profile=prefill_profile,
-        )
+    model_args, model, page_table, tt_kv_cache = create_tt_model(
+        mesh_device,
+        instruct=instruct,
+        max_batch_size=batch_size,
+        optimizations=optimizations,
+        max_seq_len=max_seq_len,
+        num_layers=num_layers,
+        dummy_weights=not instruct,
+        page_params=page_params,
+        dtype=ttnn.bfloat8_b,
+        use_paged_kv_cache=paged_attention,
+        prefill_profile=prefill_profile,
+    )
 
     model_args.tokenizer = Tokenizer(model_args.tokenizer_path)
     tokenizer = model_args.tokenizer
@@ -1147,8 +1093,6 @@ def test_demo_text(
 
         if prefill_profile:  # If we are profiling prefill, we stop here
             model.tt_ccl.close()
-            if use_cached_model:
-                setattr(model, "_cached_model_already_used", True)
             return True
 
         # Keep track of generated outputs to print out every iteration
@@ -1182,8 +1126,7 @@ def test_demo_text(
             model.switch_mode("decode")
         except Exception as e:
             logger.error(f"Error switching to decode mode: {str(e)}")
-            if not use_cached_model:
-                model.tt_ccl.close()
+            model.tt_ccl.close()
             raise
         logger.info(f"Starting decode loop from positions: {decoding_pos}")
 
@@ -1572,12 +1515,9 @@ def test_demo_text(
             ml_model_name="llama70b-tg",
         )
 
-    if use_cached_model:
-        setattr(model, "_cached_model_already_used", True)
-
 
 # =============================================================================
-# Prefill prefix-caching benchmark (minimal, self-contained)
+# Prefill prefix-caching benchmark
 # =============================================================================
 # Run: pytest text_demo.py::test_prefill_prefix_caching_benchmark -v -s
 # Output: models/demos/llama3_70b_galaxy/demo/output/prefill_prefix_caching_benchmark.json
@@ -1585,7 +1525,7 @@ def test_demo_text(
 
 PREFILL_BENCHMARK_OUTPUT = Path(__file__).resolve().parent / "output" / "prefill_prefix_caching_benchmark.json"
 
-# Seq lengths (powers of 2 from 128 to 32k). Aligned to page_block_size for prefix-caching.
+# Seq lengths (powers of 2 from 128 to 128k).
 PREFILL_BENCHMARK_SEQ_LENS = [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
 PREFILL_BENCHMARK_BLOCK_SIZE = 64
 
@@ -1596,7 +1536,7 @@ def _make_synthetic_prefill_input(batch_size, seq_len, vocab_size, dtype=torch.l
 
 
 @pytest.mark.timeout(1800)
-def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
+def test_prefill_prefix_caching_benchmark(mesh_device):
     """
     Measure prefill time (after warmup) for seq_len in [128..32k] (powers of 2),
     with no prefix caching vs 50%/75%/90% prefix cached. Uses synthetic input tokens.
@@ -1605,10 +1545,21 @@ def test_prefill_prefix_caching_benchmark(mesh_device, cached_llama_model_80l):
     page_params = {"page_block_size": PREFILL_BENCHMARK_BLOCK_SIZE, "page_max_num_blocks": 2048}
     batch_size = 1
 
-    model_args, model, tt_kv_cache = cached_llama_model_80l
+    model_args, model, page_table, tt_kv_cache = create_tt_model(
+        mesh_device,
+        instruct=True,
+        max_batch_size=batch_size,
+        optimizations=LlamaOptimizations.performance,
+        max_seq_len=128 * 1024,
+        num_layers=80,
+        dummy_weights=False,
+        page_params=page_params,
+        dtype=ttnn.bfloat8_b,
+        use_paged_kv_cache=True,
+        prefill_profile=False,
+    )
     model_args.tokenizer = Tokenizer(model_args.tokenizer_path)
     generator = Generator(model, model_args, mesh_device, tokenizer=model_args.tokenizer)
-    page_table = make_page_table(page_params, batch_size)
     vocab_size = model_args.vocab_size
 
     sampling_params = SamplingParams(temperature=0.0, top_p=0.05, top_k=32)

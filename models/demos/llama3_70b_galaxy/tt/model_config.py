@@ -33,8 +33,10 @@ from models.demos.llama3_70b_galaxy.tt.load_checkpoints import (
     standardize_hf_keys,
 )
 
-# Chunk size for flexible chunked SDPA (prefix caching).  chunk_start_idx must be
-# a multiple of this; generator aligns num_cached_tokens down to this boundary.
+# Performance tuning:
+# Chunk size for flexible chunked SDPA (prefix caching). chunk_start_idx must be
+# a multiple of this; generator aligns num_cached_tokens DOWN to this boundary.
+# (That means some tokens, even full pages, can be recomputed.)
 SDPA_CHUNK_ALIGN = 128
 
 PREFETCHER_NOC1_GRID = [
