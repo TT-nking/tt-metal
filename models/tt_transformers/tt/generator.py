@@ -822,7 +822,7 @@ class Generator(WarmupForwardMixin):
             return tt_logits
 
     # Note: This function is called by vLLM
-    def decode_forward_text(
+    def decode_forward(
         self,
         tokens,
         start_pos,
@@ -1385,50 +1385,6 @@ class Generator(WarmupForwardMixin):
             return self.process_decode_output_host(to_host)
         else:
             return tt_logits
-
-    def decode_forward(
-        self,
-        start_pos,
-        tokens,
-        prefill_cross_attention_masks,
-        prefill_full_text_row_masked_out_mask,
-        decode_cross_attention_masks,
-        decode_full_text_row_masked_out_mask,
-        xattn_caches=None,
-        page_table=None,
-        kv_cache=None,
-        cross_page_table=None,
-        enable_trace=True,
-        read_from_device=True,
-    ):
-        if not self.model_args[0].is_llama_vision():
-            output = self.decode_forward_text(
-                tokens,
-                start_pos,
-                enable_trace=enable_trace,
-                page_table=page_table,
-                kv_cache=kv_cache,
-            )
-        else:
-            output = self.decode_forward_llama_vision(
-                start_pos,
-                tokens,
-                prefill_cross_attention_masks,
-                prefill_full_text_row_masked_out_mask,
-                decode_cross_attention_masks,
-                decode_full_text_row_masked_out_mask,
-                xattn_caches,
-                page_table,
-                kv_cache,
-                cross_page_table,
-                enable_trace,
-                read_from_device,
-            )
-        # skip returning log-probs
-        if isinstance(output, tuple):
-            return output[0]
-        else:
-            return output
 
     # Note: This function is called by vLLM
     def read_decode_output(self, tt_out, async_read=False):
@@ -2001,7 +1957,7 @@ class Generator(WarmupForwardMixin):
             position_id = torch.tensor([prefill_len + gen_idx])
             next_token_tensor = next_token.reshape(1, 1)  # B, S
 
-            logits = self.decode_forward(
+            logits = self.decode_forward_llama_vision(
                 position_id,
                 next_token_tensor,
                 prefill_output_xattn_masks,
@@ -2011,6 +1967,10 @@ class Generator(WarmupForwardMixin):
                 [xattn_caches],
                 enable_trace=False,
             )
+
+            if isinstance(logits, tuple):
+                logits = logits[0]
+
             next_token, text = sample(logits)
             yield TokenResult(
                 token=next_token[0].item(),
