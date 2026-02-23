@@ -152,6 +152,7 @@ class Generator(WarmupForwardMixin):
         self.tt_logits_accumulated_batched = []  # Temporary list for batched prefill
         self.prev_page_table = None
         self.prefill_traces_warmup = False
+        self.warming_up_prefill = False
         self.trace_ids_decode = defaultdict(lambda: None)  # {return_logits: {device_id: trace_id}}
         self.trace_inputs_decode = defaultdict(lambda: None)
         self.trace_output_decode = defaultdict(lambda: None)
@@ -195,6 +196,7 @@ class Generator(WarmupForwardMixin):
     ):
         # Avoids an infinite loop
         self.prefill_traces_warmup = True
+        self.warming_up_prefill = True
 
         self.model.switch_mode("prefill")
         logger.info("Warming up prefill traces for all supported sequence lengths")
@@ -285,6 +287,7 @@ class Generator(WarmupForwardMixin):
             logger.info("Skipping prefix-caching warmup (page_table is None, non-paged attention)")
 
         logger.info("Prefill traces warmup completed")
+        self.warming_up_prefill = False
 
     def prefill_forward_text(
         self,
@@ -349,7 +352,7 @@ class Generator(WarmupForwardMixin):
         # replication).  Overwriting cached KV blocks with identical data is
         # harmless, so this is functionally safe.
         # Skip during warmup so we record all sp1 traces regardless.
-        if not self.prefill_traces_warmup:
+        if not self.warming_up_prefill:
             for idx, seq_len in enumerate(prompt_lens):
                 if _should_skip_prefix_caching(int(seq_len), num_cached_tokens_list[idx]):
                     logger.info(
