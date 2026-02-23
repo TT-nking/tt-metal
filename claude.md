@@ -67,13 +67,41 @@ python -m pytest models/demos/deepseek_v3/tests/test_moe.py::test_forward_pass -
 ## Recent Changes
 
 ### 2026-02-23: Investigated Collective Operations in Tests
-- **Initial attempt**: Tried to remove collective operations from test_mlp.py and test_moe.py per PR review comment
-- **Finding**: The collective operations in tests are **NOT redundant** - they are necessary because:
-  - MLP and MoE modules have sharded weights for tensor parallelism
-  - The modules themselves don't handle collective operations (by design)
-  - When decoder blocks call these modules, they handle collective ops in `_forward_mlp_common`
-  - When tests call modules directly, the tests MUST handle collective ops
-- **Conclusion**: Reverted changes - the original test implementation with collective operations is correct
-- **Architecture**:
-  - Modules (MLP, MoE) work with sharded weights and expect appropriate tensor distribution
-  - Collective ops are handled by the caller (decoder blocks in production, tests when testing directly)
+
+**Initial Request**: PR review comment asked to remove TTNN collective operations from test_mlp.py and test_moe.py
+
+**Investigation Approaches**:
+1. **Option A**: Simply remove collective ops → Failed: dimension mismatch
+2. **Option B**: Use decoder blocks that handle ops internally → Still uses collective ops internally
+3. **Option C**: Use replicated input to bypass all_gather → Failed: memory config mismatch
+4. **Option D**: Compare sharded outputs directly → Partially works but still needs collective ops during computation
+
+**Deep Technical Analysis**:
+
+**MLP Weight Sharding Pattern (Megatron-style)**:
+- **w1 (gate_proj)**: Column-parallel - needs FULL input (7168), produces SHARDED output (18432/8=2304 per device)
+- **w3 (up_proj)**: Column-parallel - needs FULL input (7168), produces SHARDED output (18432/8=2304 per device)
+- **w2 (down_proj)**: Row-parallel - takes SHARDED input (18432/8=2304), produces output needing reduction
+
+**Why Collective Ops are Mathematically Required**:
+- Column-parallel ops: `Y_i = X @ W_i` where W_i is a column slice → X must be full tensor
+- Row-parallel ops: `Y = sum(X_i @ W_i)` where W_i is a row slice → needs reduction across devices
+- This is NOT a TTNN limitation, it's a mathematical requirement of tensor parallelism
+
+**Test Attempts and Results**:
+1. **Replicated input approach**: Created tensor with `ReplicateTensorToMesh`
+   - Failed: MLP weights configured with WIDTH_SHARDED memory expecting specific dimensions
+   - Error: "Shard height 32 must match physical height 128"
+2. **Sharded comparison approach**: Use `ttnn.get_device_tensors()` to compare sharded outputs
+   - Works for comparing outputs but computation still needs collective ops
+3. **Memory config experiments**: Tried matching all_gather output format
+   - Failed: Tightly coupled memory configurations between weights and expected inputs
+
+**Final Conclusion**:
+The collective operations in tests are **ESSENTIAL and CORRECT**. They are not redundant test overhead but integral to tensor parallelism:
+- When decoder blocks call MLP/MoE, they handle collective ops in `_forward_mlp_common`
+- When tests call modules directly, tests MUST handle collective ops
+- The operations are mathematically required for sharded weight multiplication
+- Original test implementation is architecturally correct
+
+**Status**: No changes needed - collective operations must remain in tests
