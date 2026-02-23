@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections import defaultdict
-from dataclasses import dataclass, fields
+from dataclasses import fields
 from typing import List
 
 import torch
@@ -20,6 +20,8 @@ from models.common.llama_models import (
     sample_top_p,
 )
 from models.common.sampling.generator import format_sampling_params
+from models.common.sampling.sampling_params import SamplingParams
+from models.common.warmup import WarmupForwardMixin
 from models.tt_transformers.tt.common import (
     Mode,
     copy_host_to_device,
@@ -31,24 +33,6 @@ from models.tt_transformers.tt.common import (
 
 # Maximum total sequence length for batched prefill (batch_size * per_user_seq_len)
 MAX_BATCHED_PREFILL_SEQ_LEN = 128 * 1024
-
-
-@dataclass(frozen=True)
-class SamplingParams:
-    """
-    Used in Generator decode forward functions for greedy decoding / sampling on device.
-    The same data class exists in vLLM at vllm/worker/tt_model_runner.py.
-    """
-
-    temperature: float | list[float]
-    top_k: int | list[int]
-    top_p: float | list[float]
-    presence_penalty: float | list[float] = 0.0
-    frequency_penalty: float | list[float] = 0.0
-    repetition_penalty: float | list[float] = 1.0
-    seed: int | list[int] | None = None
-    enable_log_probs: bool | list[bool] = False
-
 
 SAMPLING_PARAM_FIELDS = tuple(f.name for f in fields(SamplingParams))
 
@@ -109,7 +93,7 @@ def max_prefill_chunk_size_cutoff(sequence_length, max_prefill_chunk_size):
     return sequence_length > max_prefill_chunk_size
 
 
-class Generator:
+class Generator(WarmupForwardMixin):
     def __init__(self, model, model_args, mesh_device, processor=None, tokenizer=None):
         """
         Creating a LlamaVision wrapper requires only a mesh_device and model_args.
@@ -156,23 +140,22 @@ class Generator:
             if sampling_module is not None:
                 sampling_module.enable_internal_trace = enabled
 
-    def warmup_model_prefill(
-        self,
-        kv_cache,
-        enable_trace,
-        sampling_params=[None],
-    ):
+    def warmup_model_prefill(self, kv_cache, enable_trace, can_sample_on_device, non_greedy_decoding_on_device):
         if self.already_warmed_up_prefill:
             return
         self.already_warmed_up_prefill = True
 
+        sampling_params = self._create_sampling_params(
+            can_sample_on_device,
+            non_greedy_decoding_on_device,
+            None,
+            mode="prefill",
+        )
+
         sequence_lengths_to_warmup = self.model_args[0].get_warmup_prefill_supported_seq_lens()
 
         for model_id in range(self.data_parallel):
-            # each model sees each sampling_params at least once
             for supported_length in sequence_lengths_to_warmup:
-                # When model_id = 0, we compile all operators for the first time
-                # Since operators are compiled, we only need to run sequence lengths that can be traced (each mesh has its own captured traces)
                 if model_id != 0 and (
                     supported_length not in self.model_args[0].trace_prefill_supported_seq_lens or not enable_trace
                 ):
@@ -185,13 +168,11 @@ class Generator:
                 logger.info(f"Warming up prefill for sequence length: {supported_length}")
 
                 page_table_warmup = None
-                # second check is some tests set the kv_cache to [None] instead of None
                 if kv_cache is not None and kv_cache[model_id] is not None:
                     block_size = get_block_size(kv_cache[model_id])
                     num_blocks = num_blocks_in_seq(supported_length, block_size)
                     page_table_warmup = torch.zeros(1, num_blocks, dtype=torch.int32)
 
-                # chunked prefill not supported without paged attention
                 if page_table_warmup is None and max_prefill_chunk_size_cutoff(
                     supported_length, self.model_args[0].max_prefill_chunk_size
                 ):
@@ -200,6 +181,9 @@ class Generator:
                     )
                     break
                 for param in sampling_params:
+                    logger.info(
+                        f"Warming up prefill for sequence length: {supported_length} with sampling params: {param}"
+                    )
                     self.prefill_forward_text(
                         warmup_tokens,
                         page_table_warmup,
@@ -220,49 +204,82 @@ class Generator:
         batch_size=1,
         user_id=0,
     ):
-        host_inputs = self.model[model_id].prepare_prefill_inputs_trace(
-            prefill_ids, page_table=page_table, batch_size=batch_size, user_id=user_id
-        )
-        # These matrices will actually be pointing to the whole cos_matrix and sin_matrix that was allocated on device in the RotarySetup class
-        tt_rot_mats_prefill_global = host_inputs[1]
-        tt_rot_mats_prefill_local = host_inputs[2]
-        # host_inputs[5] is the user_id tensor for batched prefill KV cache filling
-        host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4], host_inputs[5])
+        if batch_size > 1:
+            host_inputs = self.model[model_id].prepare_prefill_inputs_trace(
+                prefill_ids, page_table=page_table, batch_size=batch_size, user_id=user_id
+            )
+            tt_rot_mats_prefill_global = host_inputs[1]
+            tt_rot_mats_prefill_local = host_inputs[2]
+            host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4], host_inputs[5])
 
-        device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
-        transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
-        tt_out_trace = self.model[model_id].ttnn_prefill_forward(
-            x=transformed_inputs[0],
-            rot_mats_global=tt_rot_mats_prefill_global,
-            rot_mats_local=tt_rot_mats_prefill_local,
-            page_table=transformed_inputs[1],
-            chunk_page_table=transformed_inputs[2],
-            kv_cache=kv_cache,
-            batch_size=batch_size,
-            user_id=user_id,
-            user_id_tensor=transformed_inputs[3],
-        )
-        ttnn.synchronize_device(self.model_args[model_id].mesh_device)
-        logger.info("Done Compiling Model")
+            device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
+            transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
+            tt_out_trace = self.model[model_id].ttnn_prefill_forward(
+                x=transformed_inputs[0],
+                rot_mats_global=tt_rot_mats_prefill_global,
+                rot_mats_local=tt_rot_mats_prefill_local,
+                page_table=transformed_inputs[1],
+                chunk_page_table=transformed_inputs[2],
+                kv_cache=kv_cache,
+                batch_size=batch_size,
+                user_id=user_id,
+                user_id_tensor=transformed_inputs[3],
+            )
+            ttnn.synchronize_device(self.model_args[model_id].mesh_device)
+            logger.info("Done Compiling Model")
 
-        device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
-        trace_id = ttnn.begin_trace_capture(self.model_args[model_id].mesh_device, cq_id=0)
-        transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
-        tt_out_trace = self.model[model_id].ttnn_prefill_forward(
-            x=transformed_inputs[0],
-            rot_mats_global=tt_rot_mats_prefill_global,
-            rot_mats_local=tt_rot_mats_prefill_local,
-            page_table=transformed_inputs[1],
-            chunk_page_table=transformed_inputs[2],
-            kv_cache=kv_cache,
-            batch_size=batch_size,
-            user_id=user_id,
-            user_id_tensor=transformed_inputs[3],
-        )
-        ttnn.end_trace_capture(self.model_args[model_id].mesh_device, trace_id, cq_id=0)
-        ttnn.synchronize_device(self.model_args[model_id].mesh_device)
-        logger.info("Done Capturing Prefill Trace")
-        return trace_id, tt_out_trace, *device_inputs
+            device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
+            trace_id = ttnn.begin_trace_capture(self.model_args[model_id].mesh_device, cq_id=0)
+            transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
+            tt_out_trace = self.model[model_id].ttnn_prefill_forward(
+                x=transformed_inputs[0],
+                rot_mats_global=tt_rot_mats_prefill_global,
+                rot_mats_local=tt_rot_mats_prefill_local,
+                page_table=transformed_inputs[1],
+                chunk_page_table=transformed_inputs[2],
+                kv_cache=kv_cache,
+                batch_size=batch_size,
+                user_id=user_id,
+                user_id_tensor=transformed_inputs[3],
+            )
+            ttnn.end_trace_capture(self.model_args[model_id].mesh_device, trace_id, cq_id=0)
+            ttnn.synchronize_device(self.model_args[model_id].mesh_device)
+            logger.info("Done Capturing Prefill Trace")
+            return trace_id, tt_out_trace, *device_inputs
+        else:
+            host_inputs = self.model[model_id].prepare_prefill_inputs_trace(prefill_ids, page_table=page_table)
+            tt_rot_mats_prefill_global = host_inputs[1]
+            tt_rot_mats_prefill_local = host_inputs[2]
+            host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4])
+
+            device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
+            transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
+            tt_out_trace = self.model[model_id].ttnn_prefill_forward(
+                x=transformed_inputs[0],
+                rot_mats_global=tt_rot_mats_prefill_global,
+                rot_mats_local=tt_rot_mats_prefill_local,
+                page_table=transformed_inputs[1],
+                chunk_page_table=transformed_inputs[2],
+                kv_cache=kv_cache,
+            )
+            ttnn.synchronize_device(self.model_args[model_id].mesh_device)
+            logger.info("Done Compiling Model")
+
+            device_inputs = copy_host_to_device(host_inputs, mesh_device=self.model_args[model_id].mesh_device)
+            trace_id = ttnn.begin_trace_capture(self.model_args[model_id].mesh_device, cq_id=0)
+            transformed_inputs = self.model[model_id].transform_and_embed_prefill_inputs_device(*device_inputs)
+            tt_out_trace = self.model[model_id].ttnn_prefill_forward(
+                x=transformed_inputs[0],
+                rot_mats_global=tt_rot_mats_prefill_global,
+                rot_mats_local=tt_rot_mats_prefill_local,
+                page_table=transformed_inputs[1],
+                chunk_page_table=transformed_inputs[2],
+                kv_cache=kv_cache,
+            )
+            ttnn.end_trace_capture(self.model_args[model_id].mesh_device, trace_id, cq_id=0)
+            ttnn.synchronize_device(self.model_args[model_id].mesh_device)
+            logger.info("Done Capturing Prefill Trace")
+            return trace_id, tt_out_trace, *device_inputs
 
     def _easy_trace_prefill(
         self,
@@ -314,12 +331,14 @@ class Generator:
         model_id=-1,
         batch_size=1,
     ):
-        # Use actual batch_size since tokens are now in batch dimension
-        host_inputs = self.model[model_id].prepare_prefill_inputs_trace(
-            prefill_ids, page_table=page_table, batch_size=batch_size, user_id=user_id
-        )
-        # host_inputs[5] is the user_id tensor for batched prefill KV cache filling
-        host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4], host_inputs[5])
+        if batch_size > 1:
+            host_inputs = self.model[model_id].prepare_prefill_inputs_trace(
+                prefill_ids, page_table=page_table, batch_size=batch_size, user_id=user_id
+            )
+            host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4], host_inputs[5])
+        else:
+            host_inputs = self.model[model_id].prepare_prefill_inputs_trace(prefill_ids, page_table=page_table)
+            host_inputs = (host_inputs[0], host_inputs[3], host_inputs[4])
 
         device_inputs = copy_host_to_device(
             host_inputs, device_tensors=device_inputs, mesh_device=self.model_args[model_id].mesh_device
@@ -356,7 +375,11 @@ class Generator:
 
         # we need this here becuase of tt-metal tests
         if warmup_prefill:
-            self.warmup_model_prefill(kv_cache, enable_trace)
+            sampling_on_device_enabled = (
+                getattr(self.model[0], "_supports_on_device_sampling", False)
+                and getattr(self.model[0], "sampling", None) is not None
+            )
+            self.warmup_model_prefill(kv_cache, enable_trace, sampling_on_device_enabled, sampling_on_device_enabled)
 
         batch_size, batch_seq_len = tokens.shape
         max_batch_size_per_model = self.model_args[0].max_batch_size
@@ -527,13 +550,44 @@ class Generator:
                 vocab_size = logits.shape[-1]
                 logits = ttnn.reshape(logits, [padded_batch, 1, prefill_seq_len, vocab_size])
 
-                for slot in empty_slots:
+                for local_idx, slot in enumerate(empty_slots):
                     user_logits = logits[slot : slot + 1, :, :, :]
                     _logits = self.model[model_id].process_logits_after_prefill_trace(user_logits, last_token_idx[slot])
-                    _logits = ttnn.to_layout(_logits, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-                    output_tensor[slot] = self.model[model_id].process_output_prefill(
-                        _logits.cpu(), last_token_idx=(last_token_idx[slot] % 32)
-                    )
+
+                    if sampling_enabled:
+                        sampling_executed = True
+                        per_request_params = format_sampling_params(
+                            _broadcast_formatted_sampling_params(sampling_params, local_idx), 32
+                        )
+                        _apply_prefill_sampling_state(
+                            self.model[model_id],
+                            sampling_params=per_request_params,
+                            prompt_tokens=prefill_ids[slot : slot + 1, : int(prompt_lens[local_idx])].repeat(32, 1),
+                            empty_slots=[slot % 32],
+                        )
+                        tt_tokens, tt_log_probs = self.model[model_id].sampling.sample(
+                            _logits,
+                            enable_trace=False,
+                        )
+                        ttnn.synchronize_device(self.model[model_id].mesh_device)
+                        tokens_host = ttnn.to_torch(ttnn.get_device_tensors(tt_tokens)[0]).reshape(-1)[
+                            last_token_idx[slot] % 32
+                        ]
+                        log_probs_host = (
+                            ttnn.to_torch(ttnn.get_device_tensors(tt_log_probs)[0]).reshape(-1)[
+                                last_token_idx[slot] % 32
+                            ]
+                            if tt_log_probs is not None
+                            else None
+                        )
+                        output_tokens[slot] = tokens_host
+                        if log_probs_host is not None:
+                            output_log_probs[slot] = log_probs_host
+                    else:
+                        _logits = ttnn.to_layout(_logits, ttnn.ROW_MAJOR_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+                        output_tensor[slot] = self.model[model_id].process_output_prefill(
+                            _logits.cpu(), last_token_idx=(last_token_idx[slot] % 32)
+                        )
                 break
 
             # Non-batched prefill path
@@ -2054,29 +2108,33 @@ class Generator:
         use_batched_prefill=False,
         user_id=None,
     ):
-        # Ensure page_table is not padded with extra blocks for paged_fill_cache to work properly
         block_size = get_block_size(kv_cache)
-        # Use prefill_seq_len when available (handles batched prefill where prefill_len may be a list)
-        seq_len_for_blocks = prefill_seq_len if prefill_seq_len is not None else prefill_len
-        num_blocks = num_blocks_in_seq(seq_len_for_blocks, block_size)
-        page_table = page_table[:, :num_blocks]
-        if trace_enabled:
-            if page_table.shape[1] < num_blocks:
-                # If page table is too short, pad it with -1
-                # Use page_table.shape[0] to handle both single user and batched prefill cases
-                padding = torch.ones(page_table.shape[0], num_blocks - page_table.shape[1], dtype=torch.int32) * -1
-                page_table = torch.cat([page_table, padding], dim=1)
-        # Pad page table to 32 users
-        padded_page_table = torch.ones(32, page_table.shape[1], dtype=torch.int32) * -1
+
         if use_batched_prefill:
+            # For batched prefill, use prefill_seq_len (padded) for num_blocks
+            num_blocks = num_blocks_in_seq(prefill_seq_len, block_size)
+            page_table = page_table[:, :num_blocks]
+            if trace_enabled:
+                if page_table.shape[1] < num_blocks:
+                    padding = torch.ones(page_table.shape[0], num_blocks - page_table.shape[1], dtype=torch.int32) * -1
+                    page_table = torch.cat([page_table, padding], dim=1)
+            padded_page_table = torch.ones(32, page_table.shape[1], dtype=torch.int32) * -1
             assert user_id is not None
             for i, user in enumerate(user_id):
                 padded_page_table[user, :] = page_table[i, :]
+            return padded_page_table
         else:
-            # Non-batched path: always put page table at slot 0 (matches main branch behavior)
-            # The model will be called with user_id=0 (group_user_id)
-            padded_page_table[0, :] = page_table[0, :]
-        return padded_page_table
+            # Non-batched: match reference main exactly
+            num_blocks = 0
+            if trace_enabled:
+                num_blocks = num_blocks_in_seq(prefill_seq_len, block_size)
+            else:
+                num_blocks = num_blocks_in_seq(prefill_len, block_size)
+            if trace_enabled:
+                if page_table.shape[1] < num_blocks:
+                    padding = torch.ones(1, num_blocks - page_table.shape[1], dtype=torch.int32) * -1
+                    page_table = torch.cat([page_table, padding], dim=1)
+            return page_table[:, :num_blocks]
 
     ## Destructor
 
