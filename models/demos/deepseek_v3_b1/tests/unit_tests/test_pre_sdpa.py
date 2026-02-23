@@ -293,7 +293,8 @@ def test_pre_sdpa(
     # ========================================================================
     # Create RoPE tensors (sin, cos, trans_mat)
     # ========================================================================
-    max_seq_len = 8192
+    max_seq_len = 8192  # Per-device max sequence length
+    total_seq_len = max_seq_len * mesh_rows  # Full sequence across SP dimension
     position_ids = torch.tensor([position_id])  # [batch]
 
     # Create cos/sin matrices in Meta-style format
@@ -668,9 +669,9 @@ def test_pre_sdpa(
         k_chunk_size=128,
         exp_approx_mode=False,  # Use exact exp for higher precision
     )
-    logger.info(f"Creating KV cache with seq_len={max_seq_len}...")
+    logger.info(f"Creating KV cache with per-device seq_len={max_seq_len}, total_seq_len={total_seq_len}...")
     kvpe_dim = KNOPE_DIM + KROPE_DIM
-    cache_shape = (1, 1, max_seq_len, kvpe_dim)
+    cache_shape = (1, 1, total_seq_len, kvpe_dim)
     torch_kv_cache = torch.zeros(cache_shape, dtype=torch.bfloat16)
 
     # ND sharding with ROUND_ROBIN_1D distribution across DRAM banks
@@ -699,7 +700,7 @@ def test_pre_sdpa(
         layout=ttnn.TILE_LAYOUT,
         device=submesh,
         memory_config=kv_mem_config,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(submesh),
+        mesh_mapper=ttnn.ShardTensor2dMesh(submesh, mesh_shape=(mesh_rows, mesh_cols), dims=(2, None)),
     )
 
     # ========================================================================
@@ -781,14 +782,11 @@ def test_pre_sdpa(
     expected_nope = torch_kv_cache_expected[..., :KNOPE_DIM]
     expected_rope = torch_kv_cache_expected[..., KNOPE_DIM:]
 
-    sdpa_pcc_by_tp = {}
-    kv_nope_pcc_first = None
-    kv_rope_pcc_first = None
-
     for device_idx in range(mesh_rows * mesh_cols):
         tp_group = device_idx % mesh_cols  # TP group determined by mesh column
+        sp_group = device_idx // mesh_cols  # SP group determined by mesh row
 
-        # ---- PreSDPA Output (TP-sharded: replicated across rows, different across columns) ----
+        # ---- PreSDPA Output (TP-sharded across columns, SP-sharded across rows) ----
         start = device_idx * slice_size
         end = start + slice_size
         received = sdpa_input_output_torch[start:end, :expected_width]
@@ -800,61 +798,48 @@ def test_pre_sdpa(
         torch_sdpa_input_expected_flat = torch_sdpa_expected_full[tp_start:tp_end, :]
         if received.shape != torch_sdpa_input_expected_flat.shape:
             logger.error(
-                f"PreSDPA Output shape mismatch at device {device_idx} (TP={tp_group}): "
+                f"PreSDPA Output shape mismatch at device {device_idx} (TP={tp_group}, SP={sp_group}): "
                 f"got {received.shape}, expected {torch_sdpa_input_expected_flat.shape}"
             )
             continue
 
         max_diff = torch.max(torch.abs(received - torch_sdpa_input_expected_flat)).item()
         mean_diff = torch.mean(torch.abs(received - torch_sdpa_input_expected_flat)).item()
-        logger.info(f"Device {device_idx} (TP={tp_group}) PreSDPA Output: Max diff={max_diff}, Mean diff={mean_diff}")
+        logger.info(
+            f"Device {device_idx} (TP={tp_group}, SP={sp_group}) PreSDPA Output: "
+            f"Max diff={max_diff}, Mean diff={mean_diff}"
+        )
 
         passing, sdpa_pcc = comp_pcc(torch_sdpa_input_expected_flat, received, 0.99)
-        logger.info(f"Device {device_idx} (TP={tp_group}) PreSDPA Output PCC: {sdpa_pcc}")
-        assert passing, f"Device {device_idx} (TP={tp_group}) PreSDPA Output PCC check failed: {sdpa_pcc}"
+        logger.info(f"Device {device_idx} (TP={tp_group}, SP={sp_group}) PreSDPA Output PCC: {sdpa_pcc}")
+        assert (
+            passing
+        ), f"Device {device_idx} (TP={tp_group}, SP={sp_group}) PreSDPA Output PCC check failed: {sdpa_pcc}"
 
-        if tp_group in sdpa_pcc_by_tp:
-            assert sdpa_pcc == sdpa_pcc_by_tp[tp_group], (
-                f"Device {device_idx} (TP={tp_group}) PreSDPA Output PCC mismatch across replicated dim: "
-                f"got {sdpa_pcc}, expected {sdpa_pcc_by_tp[tp_group]}"
-            )
-        else:
-            sdpa_pcc_by_tp[tp_group] = sdpa_pcc
-
-        # ---- KV Cache (fully replicated, no TP) ----
+        # ---- KV Cache (SP-sharded across rows, unique per device) ----
         compare_kv_cache = kv_cache_output_torch[device_idx, ..., position_id, :]
         compare_nope = compare_kv_cache[..., :KNOPE_DIM]
         compare_rope = compare_kv_cache[..., KNOPE_DIM:]
 
         nope_max_diff = torch.max(torch.abs(expected_nope - compare_nope)).item()
         nope_mean_diff = torch.mean(torch.abs(expected_nope - compare_nope)).item()
-        logger.info(f"Device {device_idx} KV Cache NOPE: Max diff={nope_max_diff}, Mean diff={nope_mean_diff}")
+        logger.info(
+            f"Device {device_idx} (SP={sp_group}) KV Cache NOPE: "
+            f"Max diff={nope_max_diff}, Mean diff={nope_mean_diff}"
+        )
         nope_passing, nope_pcc = comp_pcc(compare_nope, expected_nope, 0.98)
-        logger.info(f"Device {device_idx} KV Cache NOPE PCC: {nope_pcc}")
-        assert nope_passing, f"Device {device_idx} KV Cache NOPE PCC check failed: {nope_pcc}"
-
-        if kv_nope_pcc_first is not None:
-            assert nope_pcc == kv_nope_pcc_first, (
-                f"Device {device_idx} KV Cache NOPE PCC mismatch across replicated dim: "
-                f"got {nope_pcc}, expected {kv_nope_pcc_first}"
-            )
-        else:
-            kv_nope_pcc_first = nope_pcc
+        logger.info(f"Device {device_idx} (SP={sp_group}) KV Cache NOPE PCC: {nope_pcc}")
+        assert nope_passing, f"Device {device_idx} (SP={sp_group}) KV Cache NOPE PCC check failed: {nope_pcc}"
 
         rope_max_diff = torch.max(torch.abs(expected_rope - compare_rope)).item()
         rope_mean_diff = torch.mean(torch.abs(expected_rope - compare_rope)).item()
-        logger.info(f"Device {device_idx} KV Cache ROPE: Max diff={rope_max_diff}, Mean diff={rope_mean_diff}")
+        logger.info(
+            f"Device {device_idx} (SP={sp_group}) KV Cache ROPE: "
+            f"Max diff={rope_max_diff}, Mean diff={rope_mean_diff}"
+        )
         rope_passing, rope_pcc = comp_pcc(compare_rope, expected_rope, 0.98)
-        logger.info(f"Device {device_idx} KV Cache ROPE PCC: {rope_pcc}")
-        assert rope_passing, f"Device {device_idx} KV Cache ROPE PCC check failed: {rope_pcc}"
-
-        if kv_rope_pcc_first is not None:
-            assert rope_pcc == kv_rope_pcc_first, (
-                f"Device {device_idx} KV Cache ROPE PCC mismatch across replicated dim: "
-                f"got {rope_pcc}, expected {kv_rope_pcc_first}"
-            )
-        else:
-            kv_rope_pcc_first = rope_pcc
+        logger.info(f"Device {device_idx} (SP={sp_group}) KV Cache ROPE PCC: {rope_pcc}")
+        assert rope_passing, f"Device {device_idx} (SP={sp_group}) KV Cache ROPE PCC check failed: {rope_pcc}"
 
     logger.info("✓ PreSDPA mesh test passed!")
 
