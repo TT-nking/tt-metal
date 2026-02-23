@@ -735,7 +735,6 @@ class TtLlamaAttention(LightweightModule):
             k_fill = self.prefill_prepare_tensor_for_kv_cache(k_fill, user_id)
             v_fill = self.prefill_prepare_tensor_for_kv_cache(v_fill, user_id)
 
-        user_id_for_mask = None  # Will be set if page_table is provided
         if page_table:
             # Use chunk_page_table only for prefix-cached prefill (chunk_start_idx > 0).
             # For non-prefix prefill, ignore chunk_page_table (trace may pass a dummy) and use page_table.

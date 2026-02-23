@@ -27,6 +27,7 @@ from models.common.sampling import SamplingParams, format_sampling_params
 from models.common.warmup import WarmupForwardMixin
 from models.demos.llama3_70b_galaxy.tt.model_config import SDPA_CHUNK_ALIGN
 
+
 def get_padded_prefill_len(seq_len: int) -> int:
     """
     Get the padded prefill length for a given sequence length.
@@ -49,7 +50,11 @@ def _should_skip_prefix_caching(
 
     Returns True when reprocessing all tokens (ignoring the cached prefix)
     is expected to be faster.  In that case the caller should set
-    num_cached_tokens = 0 so the regular ring-SDPA path is used.
+    num_cached_tokens = 0 so the regular path is used.
+
+    The main overheads:
+    - Column replication (TT_CCL.ATTN_REPLICATE)
+    - Chunked SDPA slower than regular and especially ring-SDPA
 
     The heuristic compares the *padded* new-token length with the *padded*
     total length.  Because get_padded_prefill_len rounds aggressively
@@ -690,7 +695,6 @@ class Generator(WarmupForwardMixin):
             prefill_chunk_start_idx = chunk_start_idx
             prefill_start_pos = chunk_start_idx  # Python int for attention (SDPA path, program config)
             prefill_get_last_token = last_token_idx_relative  # RELATIVE index for slicing within chunk
-            prefill_last_token_idx = last_token_idx_relative
         else:
             # Non-prefix-cached path
             prefill_page_table = page_table_user
@@ -698,7 +702,6 @@ class Generator(WarmupForwardMixin):
             prefill_chunk_start_idx = 0
             prefill_start_pos = 0
             prefill_get_last_token = last_token_idx
-            prefill_last_token_idx = last_token_idx
 
         (
             tt_prefill_input,
@@ -746,7 +749,7 @@ class Generator(WarmupForwardMixin):
     ):
         """
         Tracing with prefix caching support.
-        Trace key is (prefill_seq_len, batch_size, use_ring, use_start_pos)
+        Trace key is (prefill_seq_len, batch_size, use_start_pos)
         Does not differentiate between num_cached_tokens (only zero or non-zero).
         page_table is padded to fixed max shape so one trace can be reused for any num_cached_blocks.
         """
