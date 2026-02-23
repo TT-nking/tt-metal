@@ -182,9 +182,9 @@ class PreSDPA:
         Args:
             input_tensor_mesh: Input mesh tensor (must be sharded on single core per device)
             intermediate_tensor_mesh: Intermediate mesh tensor for CCL broadcast destination
-            gamma_tensor: Gamma/weight tensor (must be sharded, same shape as input)
+            gamma_tensor: OverlappedTensor for attn_norm gamma (shares fused o_proj/gate/gamma buffer)
             matmul_weights_tensor: OverlappedTensor for packed q_a_proj weights (shares fused buffer)
-            rmsnorm2_gamma_tensor: Gamma tensor for second RMSNorm (1536 elements = 3 tiles of 16x32)
+            rmsnorm2_gamma_tensor: OverlappedTensor for q_norm gamma (shares fused o_proj/gate/gamma buffer)
             matmul2_weights_tensor: OverlappedTensor for shuffled q_b_proj weights (shares fused buffer)
             matmul3_weights_tensor: OverlappedTensor for kv_b1_proj weights (shares fused kv_b12 buffer)
             qrope_sin_tensor: Sin tensor (sharded tensor for QRoPE)
@@ -217,9 +217,8 @@ class PreSDPA:
         # Get per-device tensors
         input_tensors_per_device = ttnn.get_device_tensors(input_tensor_mesh)
         intermediate_tensors_per_device = ttnn.get_device_tensors(intermediate_tensor_mesh)
-        gamma_tensors_per_device = ttnn.get_device_tensors(gamma_tensor)
+        gamma_fused_tensors_per_device = ttnn.get_device_tensors(gamma_tensor.fused_tensor)
         fused_weights_tensors_per_device = ttnn.get_device_tensors(matmul_weights_tensor.fused_tensor)
-        rmsnorm2_gamma_tensors_per_device = ttnn.get_device_tensors(rmsnorm2_gamma_tensor)
         kv_b12_fused_tensors_per_device = ttnn.get_device_tensors(matmul3_weights_tensor.fused_tensor)
         qrope_sin_tensors_per_device = ttnn.get_device_tensors(qrope_sin_tensor)
         qrope_cos_tensors_per_device = ttnn.get_device_tensors(qrope_cos_tensor)
@@ -228,7 +227,6 @@ class PreSDPA:
         krope_sin_tensors_per_device = ttnn.get_device_tensors(krope_sin_tensor)
         position_ids_tensors_per_device = ttnn.get_device_tensors(position_ids_tensor)
         output_tensors_per_device = ttnn.get_device_tensors(output_tensor)
-        dkv_rmsnorm_gamma_tensors_per_device = ttnn.get_device_tensors(dkv_rmsnorm_gamma_tensor)
         kv_cache_tensors_per_device = ttnn.get_device_tensors(kv_cache_tensor)
         sdpa_out_interm_buffers_per_device = ttnn.get_device_tensors(sdpa_out_interm_buffer)
         sdpa_kv_cache_buffers_per_device = ttnn.get_device_tensors(sdpa_kv_cache_buffer)
@@ -926,8 +924,7 @@ class PreSDPA:
         # KV Cache Branch: Gather: dkv matmul cores (senders) -> rmsnorm core (receiver)
         # Sender runs on NCRISC (NOC_0 default), Receiver runs on BRISC (NOC_1 default)
         # ========================================================================
-        dkv_rmsnorm_gamma_sample = dkv_rmsnorm_gamma_tensors_per_device[0]
-        dkv_gather_receiver_core = dkv_rmsnorm_gamma_sample.memory_config().shard_spec.grid.ranges()[0].start
+        dkv_gather_receiver_core = dkv_rmsnorm_gamma_tensor.core_range_set.ranges()[0].start
         dkv_gather_sender_grid = dkv_matmul_weights_core_grid.subtract(krope_grid)
 
         # Get NOC coordinates for gather destination (receiver core)
@@ -1064,15 +1061,13 @@ class PreSDPA:
                 # Get the device's tensors
                 input_tensor_device = input_tensors_per_device[device_idx]
                 intermediate_tensor_device = intermediate_tensors_per_device[device_idx]
-                gamma_tensor_device = gamma_tensors_per_device[device_idx]
+                gamma_fused_tensor_device = gamma_fused_tensors_per_device[device_idx]
                 fused_weights_tensor_device = fused_weights_tensors_per_device[device_idx]
-                rmsnorm2_gamma_tensor_device = rmsnorm2_gamma_tensors_per_device[device_idx]
                 kv_b12_fused_tensor_device = kv_b12_fused_tensors_per_device[device_idx]
                 qrope_cos_tensor_device = qrope_cos_tensors_per_device[device_idx]
                 qrope_sin_tensor_device = qrope_sin_tensors_per_device[device_idx]
                 trans_mat_tensor_device = trans_mat_tensors_per_device[device_idx]
                 output_tensor_device = output_tensors_per_device[device_idx]
-                dkv_rmsnorm_gamma_tensor_device = dkv_rmsnorm_gamma_tensors_per_device[device_idx]
                 krope_cos_tensor_device = krope_cos_tensors_per_device[device_idx]
                 krope_sin_tensor_device = krope_sin_tensors_per_device[device_idx]
                 position_ids_tensor_device = position_ids_tensors_per_device[device_idx]
@@ -1153,17 +1148,17 @@ class PreSDPA:
                 in_cb_descriptor.format_descriptors[0].tile = tile_descriptor
                 in_cb_descriptor.format_descriptors[0].page_size = cb_page_size
 
-                # CB: Gamma (created from sharded tensor)
-                gamma_cb_descriptor = ttnn.cb_descriptor_from_sharded_tensor(gamma_cb, gamma_tensor_device)
-                # Update the tile descriptor in the format descriptor
+                # CB: Gamma (backed by fused overlapped tensor)
+                gamma_cb_descriptor = cb_descriptor_from_overlapped_tensor(
+                    gamma_cb, gamma_tensor, gamma_fused_tensor_device
+                )
                 gamma_cb_descriptor.format_descriptors[0].tile = tile_descriptor
                 gamma_cb_descriptor.format_descriptors[0].page_size = cb_page_size
 
-                # CB: RMSNorm2 Gamma (created from sharded tensor, 3 tiles of 16x32)
-                rmsnorm2_gamma_cb_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
-                    rmsnorm2_gamma_cb, rmsnorm2_gamma_tensor_device
+                # CB: RMSNorm2 Gamma (backed by fused overlapped tensor)
+                rmsnorm2_gamma_cb_descriptor = cb_descriptor_from_overlapped_tensor(
+                    rmsnorm2_gamma_cb, rmsnorm2_gamma_tensor, gamma_fused_tensor_device
                 )
-                # Update the tile descriptor in the format descriptor to match rmsnorm2 tile shape
                 rmsnorm2_gamma_cb_descriptor.format_descriptors[0].tile = rmsnorm2_tile_descriptor
                 rmsnorm2_gamma_cb_descriptor.format_descriptors[0].page_size = rmsnorm2_page_size
 
@@ -1556,9 +1551,9 @@ class PreSDPA:
                 ]
                 sdpa_out_interm_running_offset += kv_rmsnorm_input_cb_descriptor.total_size  # +1024 B
 
-                # CB: KV RMSNorm gamma buffer
-                kv_rmsnorm_gamma_cb_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
-                    kv_rmsnorm_gamma_cb, dkv_rmsnorm_gamma_tensor_device
+                # CB: KV RMSNorm gamma buffer (backed by fused overlapped tensor)
+                kv_rmsnorm_gamma_cb_descriptor = cb_descriptor_from_overlapped_tensor(
+                    kv_rmsnorm_gamma_cb, dkv_rmsnorm_gamma_tensor, gamma_fused_tensor_device
                 )
                 kv_rmsnorm_gamma_cb_descriptor.format_descriptors[0].tile = kv_rmsnorm_tile_descriptor
                 kv_rmsnorm_gamma_cb_descriptor.format_descriptors[0].page_size = kv_rmsnorm_page_size
@@ -1626,7 +1621,7 @@ class PreSDPA:
                 ]
                 sdpa_out_interm_running_offset += krope_output_cb_descriptor.total_size  # +64 B
 
-                dkv_rmsnorm_grid = dkv_rmsnorm_gamma_tensor_device.memory_config().shard_spec.grid
+                dkv_rmsnorm_grid = dkv_rmsnorm_gamma_tensor.core_range_set
                 TILE_32x32 = ttnn.Tile((32, 32))
                 kv_cache_page_size = TILE_32x32.get_tile_size(ttnn.bfloat8_b)
                 kv_cache_update_grid = dkv_rmsnorm_grid.merge(krope_grid)
@@ -2028,9 +2023,8 @@ class PreSDPA:
             [
                 input_tensor_mesh,
                 intermediate_tensor_mesh,
-                gamma_tensor,
+                gamma_tensor.fused_tensor,
                 matmul_weights_tensor.fused_tensor,
-                rmsnorm2_gamma_tensor,
                 matmul3_weights_tensor.fused_tensor,
                 trans_mat_tensor,
                 qrope_cos_tensor,
@@ -2038,7 +2032,6 @@ class PreSDPA:
                 krope_cos_tensor,
                 krope_sin_tensor,
                 position_ids_tensor,
-                dkv_rmsnorm_gamma_tensor,
                 kv_cache_tensor,
                 sdpa_kv_cache_buffer,
                 sdpa_out_interm_buffer,
