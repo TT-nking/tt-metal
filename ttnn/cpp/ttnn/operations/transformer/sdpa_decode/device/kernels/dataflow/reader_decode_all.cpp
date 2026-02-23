@@ -79,10 +79,8 @@ void kernel_main() {
     const uint32_t mcast_y0 = get_arg_val<uint32_t>(arg_idx++);
     const uint32_t mcast_y1 = get_arg_val<uint32_t>(arg_idx++);
     const uint32_t num_dests = get_arg_val<uint32_t>(arg_idx++);
-    DPRINT << "R:start batch=" << cur_batch << " head=" << cur_head_group << " reduce=" << core_num_in_reduce << ENDL();
     // idle core
     if (q_addr == 0) {
-        DPRINT << "R:idle" << ENDL();
         return;
     }
     // Get cur_pos
@@ -128,9 +126,7 @@ void kernel_main() {
             k_chunk_size_dynamic,
             sliding_window_size > 0 ? std::optional<uint32_t>(sliding_window_size) : std::nullopt);
 
-    DPRINT << "R:chunks " << k_chunk_start << "-" << k_chunk_end << ENDL();
     if (k_chunk_start == k_chunk_end) {
-        DPRINT << "R:no work" << ENDL();
         return;  // early exit because no computes needs to be done
     }
 
@@ -138,10 +134,8 @@ void kernel_main() {
     arg_idx += num_output_cores;
     tt_l1_ptr uint32_t* all_output_noc_y = (tt_l1_ptr uint32_t*)(get_arg_addr(arg_idx++));
 
-    DPRINT << "R:out_cores=" << num_output_cores << " batch=" << cur_batch << ENDL();
     uint32_t output_core_noc_x = all_output_noc_x[cur_batch];
     uint32_t output_core_noc_y = all_output_noc_y[cur_batch];
-    DPRINT << "R:out_noc x=" << output_core_noc_x << " y=" << output_core_noc_y << ENDL();
 
     constexpr uint32_t q_chunk_tiles = PNHt * DHt;
     uint32_t k_chunk_tiles = Sk_chunk_t_dynamic * DHt;
@@ -173,7 +167,6 @@ void kernel_main() {
     const uint32_t q_batch_offset = cur_batch * q_chunk_tiles;
 
     // Read Q
-    DPRINT << "R:Q local=" << (uint32_t)q_locally_available << " shrd=" << (uint32_t)is_q_sharded << ENDL();
     read_q<cb_q_in, cb_q_rm, q_tile_bytes, q_chunk_tiles, is_q_sharded, tilize_q, use_half_tile, barrier_threshold>(
         q_locally_available,
         is_output_core,
@@ -184,7 +177,6 @@ void kernel_main() {
         q_args,
         q_page_size_bytes,
         q_batch_offset);
-    DPRINT << "R:Q done" << ENDL();
 
     const auto k_reader = TensorAccessor(k_args, k_addr, k_tile_bytes);
 
@@ -208,7 +200,6 @@ void kernel_main() {
         cb_push_back(cb_attention_sink, PNHt);
     }
 
-    DPRINT << "R:page_tbl paged=" << (uint32_t)is_paged_attention << ENDL();
     // Read page table
     volatile tt_l1_ptr uint32_t* page_table_ptr;
     uint32_t page_table_cb_wr_ptr = 0;
@@ -217,7 +208,6 @@ void kernel_main() {
     if constexpr (is_paged_attention) {
         constexpr uint32_t cb_id_page_table = tt::CBIndex::c_9;
         uint32_t num_pages_to_read = is_page_table_sharded ? B : 1;
-        DPRINT << "R:pt cb_reserve " << num_pages_to_read << ENDL();
         cb_reserve_back(cb_id_page_table, num_pages_to_read);
         // Read page table from DRAM
         if constexpr (!is_page_table_sharded) {
@@ -233,10 +223,7 @@ void kernel_main() {
                 get_write_ptr(cb_id_page_table) + (cur_batch / q_heads_parallel_factor) * page_table_page_size;
             page_table_ptr_u16 = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(page_table_cb_wr_ptr);
         }
-        DPRINT << "R:pt done" << ENDL();
     }
-
-    DPRINT << "R:KVM loop" << ENDL();
 
     for (uint32_t cur_head = cur_head_group * num_heads_per_core;
          cur_head < cur_head_group * num_heads_per_core + num_heads_per_core;
@@ -260,7 +247,6 @@ void kernel_main() {
                 uint64_t k_base_read_ptr;
 
                 // Read K chunk - supports both multicast and non-multicast paths
-                DPRINT << "R:K c=" << k_chunk << ENDL();
                 k_base_read_ptr = read_k<
                     cb_k_in,
                     DHt,
@@ -284,7 +270,6 @@ void kernel_main() {
                     mask_start_tile_id = read_mask_chunk<cb_mask_in, mask_tile_bytes, barrier_threshold, PNHt>(
                         PSt, Sk_chunk_t_dynamic, mask_chunk_tiles, mask_start_tile_id, mask_reader);
                 }
-                DPRINT << "R:V c=" << k_chunk << ENDL();
                 // Read V chunk - either from DRAM or from K's L1 buffer (transpose) when reuse_k is true
                 read_v<
                     cb_v_in,
@@ -323,7 +308,6 @@ void kernel_main() {
             const uint32_t v_chunk_offset = k_chunk_start * Sk_chunk_t_dynamic * vDHt;
             uint32_t v_start_tile_id = v_batch_offset + v_head_offset + v_chunk_offset;
 
-            DPRINT << "R:non-paged KV" << ENDL();
             read_kv_mask_chunks<
                 DHt,
                 vDHt,
@@ -350,8 +334,6 @@ void kernel_main() {
                 k_tile_bytes,
                 v_tile_bytes,
                 PSt);
-            DPRINT << "R:non-paged done" << ENDL();
         }
     }
-    DPRINT << "R:end" << ENDL();
 }

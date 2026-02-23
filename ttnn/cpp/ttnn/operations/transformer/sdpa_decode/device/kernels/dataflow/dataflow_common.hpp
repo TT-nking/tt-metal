@@ -559,19 +559,13 @@ uint64_t read_k(
     // Size of one row of K (one column of K^T) = DHt tiles
     constexpr uint32_t row_tile_bytes = DHt * k_tile_bytes;
 
-    DPRINT << "RK:start mcast=" << (uint32_t)use_mcast << " do=" << (uint32_t)mcast_params.do_mcast
-           << " tiles=" << k_chunk_tiles << " rows=" << Sk_chunk_t_dynamic << ENDL();
-    DPRINT << "RK:cb_reserve" << ENDL();
     cb_reserve_back(cb_k_in, k_chunk_tiles);
-    DPRINT << "RK:cb_reserve done" << ENDL();
     uint32_t k_write_ptr = get_write_ptr(cb_k_in);
     uint64_t k_base_read_ptr = get_noc_addr(k_write_ptr);
     barrier_count = 0;
 
     if constexpr (use_mcast) {
         if (mcast_params.do_mcast) {
-            DPRINT << "RK:mcast sender ndest=" << mcast_params.num_dests << " x=" << mcast_params.mcast_x
-                   << " y0=" << mcast_params.mcast_y0 << " y1=" << mcast_params.mcast_y1 << ENDL();
             for (uint32_t row = 0; row < Sk_chunk_t_dynamic; ++row) {
                 uint32_t row_write_ptr = k_write_ptr + row * row_tile_bytes;
                 uint32_t virtual_k_tile_row_num = k_chunk_start_row_num + row;
@@ -593,7 +587,6 @@ uint64_t read_k(
                     }
                 }
                 noc_async_read_barrier();
-                DPRINT << "RK:mcast row=" << row << ENDL();
                 // Multicast just this row (DHt tiles) to other cores (vertical multicast)
                 uint32_t row_start_ptr = k_write_ptr + row * row_tile_bytes;
                 uint64_t dst_mcast_addr = get_noc_multicast_addr(
@@ -624,25 +617,17 @@ uint64_t read_k(
                     mcast_params.mcast_sem_addr);
                 noc_semaphore_set_multicast(mcast_params.mcast_sem_addr, sem_mcast_addr, mcast_params.num_dests, false);
                 // Push DHt tiles (one K^T column) - allows compute to start immediately
-                DPRINT << "RK:push DHt=" << DHt << ENDL();
                 cb_push_back(cb_k_in, DHt);
-                DPRINT << "RK:push done" << ENDL();
-
                 noc_async_write_barrier();
             }
-            DPRINT << "RK:mcast done" << ENDL();
         } else {
-            DPRINT << "RK:mcast receiver" << ENDL();
             for (uint32_t row = 0; row < Sk_chunk_t_dynamic; ++row) {
-                DPRINT << "RK:wait row=" << row << ENDL();
                 noc_semaphore_wait(mcast_params.mcast_sem_ptr, 1);
                 noc_semaphore_set(mcast_params.mcast_sem_ptr, 0);
                 cb_push_back(cb_k_in, DHt);
             }
-            DPRINT << "RK:recv done" << ENDL();
         }
     } else {
-        DPRINT << "RK:no mcast" << ENDL();
         // Non-multicast path: original transposed read
         for (uint32_t row = 0; row < Sk_chunk_t_dynamic; ++row) {
             uint32_t k_write_ptr_col = k_write_ptr + row * k_tile_bytes;
@@ -666,7 +651,6 @@ uint64_t read_k(
         }
         noc_async_read_barrier();
         cb_push_back(cb_k_in, k_chunk_tiles);
-        DPRINT << "RK:done" << ENDL();
     }
     return k_base_read_ptr;
 }
@@ -694,8 +678,6 @@ void read_v(
     uint32_t& barrier_count,
     uint64_t k_base_read_ptr = 0,
     uint32_t k_tile_bytes = 0) {
-    DPRINT << "RV:start reuse=" << (uint32_t)reuse_k << " mcast=" << (uint32_t)use_mcast << " tiles=" << v_chunk_tiles
-           << " rows=" << Sk_chunk_t_dynamic << ENDL();
     cb_reserve_back(cb_v_in, v_chunk_tiles);
     uint32_t v_write_ptr = get_write_ptr(cb_v_in);
     if constexpr (reuse_k) {
@@ -710,9 +692,7 @@ void read_v(
             }
         }
         noc_async_read_barrier();
-        DPRINT << "RV:reuse done" << ENDL();
     } else {
-        DPRINT << "RV:read from DRAM" << ENDL();
         // Read V chunk in row major order, write in row-major order
         // V is an independent tensor with its own layout (width = vDHt, not DHt)
         barrier_count = 0;
@@ -738,7 +718,6 @@ void read_v(
             // No padding to skip - V is an independent tensor with contiguous layout
         }
         noc_async_read_barrier();
-        DPRINT << "RV:DRAM done" << ENDL();
     }
     cb_push_back(cb_v_in, v_chunk_tiles);
 }

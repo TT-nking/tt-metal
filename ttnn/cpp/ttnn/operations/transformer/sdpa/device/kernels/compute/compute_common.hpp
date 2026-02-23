@@ -185,13 +185,9 @@ void reduce_c(uint32_t out_cb, uint32_t prev_cb, uint32_t cols, bool do_eltwise_
     // Postcondition: out_cb has rows produced
 
     uint32_t num_tiles = rows * cols;
-    DPRINT << "RC:start" << ENDL();
     cb_wait_front(scale_cb, 1);
-    DPRINT << "RC:w sc" << ENDL();
     cb_wait_front(in0_cb, num_tiles);
-    DPRINT << "RC:w in0" << ENDL();
     cb_reserve_back(out_cb, rows);
-    DPRINT << "RC:res o" << ENDL();
 
     constexpr uint32_t reduce_dst_idx = 0;
     constexpr uint32_t prev_max_dst_idx = 1;
@@ -215,7 +211,6 @@ void reduce_c(uint32_t out_cb, uint32_t prev_cb, uint32_t cols, bool do_eltwise_
     }
 
     cb_push_back(out_cb, rows);
-    DPRINT << "RC:d" << ENDL();
 }
 
 #ifdef TRISC_MATH
@@ -968,21 +963,15 @@ void correction_block(
     uint32_t cb_exp_max_diff,
     uint32_t cb_exp_max_diff_2,
     uint32_t num_head_tiles) {
-    DPRINT << "CB: s" << ENDL();
     cb_wait_front(cb_worker_max, num_head_tiles);
-    DPRINT << "CB:w wm" << ENDL();
     cb_wait_front(cb_worker_sum, num_head_tiles);
     cb_wait_front(cb_prev_max, num_head_tiles);
-    DPRINT << "CB:w pm" << ENDL();
     cb_wait_front(cb_prev_sum, num_head_tiles);
-    DPRINT << "CB:w ps" << ENDL();
 
     cb_reserve_back(cb_cur_max, num_head_tiles);
     cb_reserve_back(cb_cur_sum, num_head_tiles);
     cb_reserve_back(cb_exp_max_diff, num_head_tiles);
     cb_reserve_back(cb_exp_max_diff_2, num_head_tiles);
-
-    DPRINT << "CB:r cm" << ENDL();
 
     constexpr uint32_t dst_reg_0 = 0;  // dst_reg_0 is used for prev_max
     constexpr uint32_t dst_reg_1 = 1;  // dst_reg_1 is used for worker_max
@@ -1029,7 +1018,6 @@ void move_block(uint32_t in_cb, uint32_t out_cb, uint32_t num_tiles) {
     copy_tile_to_dst_init_short(in_cb);
     cb_wait_front(in_cb, num_tiles);
     cb_reserve_back(out_cb, num_tiles);
-    DPRINT << "MB:res d" << ENDL();
 
 #pragma GCC unroll 0
     for (uint32_t i = 0; i < num_tiles; i++) {
@@ -1220,11 +1208,8 @@ ALWI void matmul_blocks(
     uint32_t in0_wait_tiles = in0_subblock_num_tiles;
 
     reconfig_data_format(in1_cb, in0_cb);
-    DPRINT << "MM:wait in1=" << in1_cb << " tiles=" << K * N << ENDL();
     cb_wait_front(in1_cb, K * N);
-    DPRINT << "MM:wait in1 done" << ENDL();
     cb_reserve_back(out_cb, output_num_tiles);
-    DPRINT << "MM:res out" << ENDL();
 
     for (uint32_t in0_subblock = 0; in0_subblock < in0_num_subblocks; ++in0_subblock) {
         cb_wait_front(in0_cb, in0_wait_tiles);
@@ -1270,7 +1255,6 @@ ALWI void matmul_blocks(
         cb_push_back(out_cb, in0_subblock_all_cols_num_tiles);
     }
     cb_pop_front(in1_cb, K * N);
-    DPRINT << "MM:pop done" << ENDL();
 }
 
 template <uint32_t M>

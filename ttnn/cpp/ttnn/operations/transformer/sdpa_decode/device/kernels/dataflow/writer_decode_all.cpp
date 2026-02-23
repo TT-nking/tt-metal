@@ -80,15 +80,11 @@ void kernel_main() {
     tt_l1_ptr uint32_t* reduction_group_core_ys = (tt_l1_ptr uint32_t*)(get_arg_addr(arg_idx));
     arg_idx += num_cores_per_head;
 
-    DPRINT << "W:start b=" << cur_batch << " h=" << cur_head_group << " r=" << core_num_in_reduce << ENDL();
-    DPRINT << "W:ncph=" << num_cores_per_head << " base_idx=" << reduction_group_base_idx << ENDL();
     for (uint32_t i = 0; i < num_cores_per_head; ++i) {
-        DPRINT << "W:rg[" << i << "]=(" << reduction_group_core_xs[i] << "," << reduction_group_core_ys[i] << ")"
-               << ENDL();
+        << ENDL();
     }
     // idle core
     if (out_addr == 0) {
-        DPRINT << "W:idle" << ENDL();
         return;
     }
     // Get cur_pos
@@ -101,7 +97,6 @@ void kernel_main() {
             cur_pos = cur_pos_arg;
         } else {
             constexpr uint32_t cb_index_id = tt::CBIndex::c_8;
-            DPRINT << "W:curpos wait" << ENDL();
             cb_wait_front(cb_index_id, 1);
             uint32_t index_cb_ptr = get_read_ptr(cb_index_id);
             volatile tt_l1_ptr uint32_t* index_ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(index_cb_ptr);
@@ -132,10 +127,8 @@ void kernel_main() {
 
     // Cores without data don't participate in tree reduction at all
     if (!has_local_data) {
-        DPRINT << "W:no data" << ENDL();
         return;
     }
-    DPRINT << "W:chunks " << k_chunk_start << "-" << k_chunk_end << ENDL();
 
     // Determine which children actually participate in reduction (based on chunk allocation)
     // A child at core_num has data if core_num < k_num_chunks
@@ -235,13 +228,10 @@ void kernel_main() {
     uint32_t barrier_count = 0;
 
     noc_async_write_barrier();  // #19201 BH hang workaround
-    DPRINT << "W:loop nch=" << num_active_children << " rounds=" << num_active_rounds
-           << " parent=" << (should_send_to_parent ? 1u : 0u) << ENDL();
 
     for (uint32_t cur_head = cur_head_group * num_heads_per_core;
          cur_head < cur_head_group * num_heads_per_core + num_heads_per_core;
          ++cur_head) {
-        DPRINT << "W:head " << cur_head << ENDL();
         // Tree reduction: receive from children at each round
         // Each round, we wait for one child (if any), read remote_sum, remote_max, remote_output, and push to CBs
         // The compute kernel processes each child's data before we move to the next round
@@ -252,9 +242,7 @@ void kernel_main() {
 
             for (uint32_t round = 0; round < num_active_rounds; ++round) {
                 uint32_t child_id = active_children_per_round[round];
-                DPRINT << "W:round " << round << " child=" << child_id << ENDL();
                 if (child_id != UINT32_MAX) {
-                    DPRINT << "W:wait child " << child_id << ENDL();
                     // Wait for this specific child to send its results
                     // Poll until round-specific nibble is >= 1
                     // Each round uses a 4-bit field: round 0 = bits 0-3, round 1 = bits 4-7, etc.
@@ -303,10 +291,8 @@ void kernel_main() {
 
         // SENDER: send intermediates to parent (only need to do this ONCE, once you send you are done)
         // We have data (checked at function start), so send it
-        DPRINT << "W:send? root=" << (uint32_t)is_tree_root << " has_parent=" << (uint32_t)should_send_to_parent
-               << ENDL();
+
         if (!is_tree_root && should_send_to_parent) {
-            DPRINT << "W:send wait" << ENDL();
             // Wait for compute to finish writing to cb_out_worker, cb_out_m, cb_out_l
             cb_wait_front(cb_out_worker, out_chunk_tiles);
             cb_wait_front(cb_out_m, PNHt);
@@ -339,16 +325,13 @@ void kernel_main() {
             cb_pop_front(cb_out_l, PNHt);
             noc_async_atomic_barrier();
             // Senders can return, dont need to participate
-            DPRINT << "W:send done" << ENDL();
             return;
         }
 
         if (!is_tree_root) {
-            DPRINT << "W:not root no parent" << ENDL();
             return;
         }
 
-        DPRINT << "W:root write" << ENDL();
         // ROOT CORE REMAINING WRITER WORK
         // Offset for current batch
         uint32_t out_tile_id = cur_batch * out_chunk_tiles;
@@ -438,5 +421,4 @@ void kernel_main() {
             cb_pop_front(cb_out, out_chunk_tiles);
         }
     }
-    DPRINT << "W:end" << ENDL();
 }
