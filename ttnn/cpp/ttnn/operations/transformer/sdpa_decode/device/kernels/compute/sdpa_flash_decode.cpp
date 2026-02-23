@@ -63,6 +63,7 @@ void kernel_main() {
     constexpr uint32_t scale_fp32 = get_compile_time_arg_val(28);
     constexpr uint32_t sliding_window_size = get_compile_time_arg_val(29);
     constexpr uint32_t num_tree_reduction_rounds = get_compile_time_arg_val(30);
+    constexpr bool reuse_k = get_compile_time_arg_val(31) == 1;
 
     constexpr uint32_t q_chunk_tiles = Sq_chunk_t * DHt;
     constexpr uint32_t out_chunk_tiles = Sq_chunk_t * vDHt;
@@ -125,10 +126,14 @@ void kernel_main() {
         children_per_round[r] = get_arg_val<uint32_t>(arg_idx++);
     }
 
+    DPRINT << "C:start b=" << cur_batch << " h=" << cur_head << " r=" << core_num_in_reduce
+           << " nch_ct=" << num_cores_per_head << ENDL();
+    DPRINT << "C:children[0]=" << children_per_round[0] << " [1]=" << children_per_round[1] << ENDL();
     // Idle core
     // get_arg_val<uint32_t>(0) can go from 0-63 for the core_num; for active cores 65 is out of range so 65 indicates
     // an idle_core
     if (get_arg_val<uint32_t>(0) == 65) {
+        DPRINT << "C:idle" << ENDL();
         return;
     }
 
@@ -143,13 +148,15 @@ void kernel_main() {
         } else {
             // Read cur_pos from CB using mailbox-based synchronization (issue #27979)
             constexpr uint32_t cb_index_id = tt::CBIndex::c_8;
-
+            DPRINT << "C:curpos wait" << ENDL();
             cb_wait_front(cb_index_id, 1);
             cur_pos = read_tile_value(cb_index_id, 0, cur_batch / q_heads_parallel_factor);
-            cb_pop_front(cb_index_id, 1);
+            // Don't pop - writer also needs to read from this CB
+            DPRINT << "C:curpos=" << cur_pos << ENDL();
         }
         if (cur_pos == UINT32_MAX) {
             // cur_pos of -1 indicates that the user should be skipped
+            DPRINT << "C:skip batch" << ENDL();
             return;
         }
     }
@@ -174,8 +181,10 @@ void kernel_main() {
     // Cores without data don't participate in tree reduction at all
     // They just exit early - no sending, no receiving
     if (!has_local_data) {
+        DPRINT << "C:no data" << ENDL();
         return;
     }
+    DPRINT << "C:chunks " << k_chunk_start << "-" << k_chunk_end << ENDL();
 
     // Determine which children actually participate in reduction (based on chunk allocation)
     // A child at core_num is active or has data if core_num < k_num_chunks
@@ -200,6 +209,7 @@ void kernel_main() {
     }
 
     // We tilize input Q if it is in ROW MAJOR layout
+    DPRINT << "C:Q wait tilize=" << (uint32_t)tilize_q << ENDL();
     if constexpr (tilize_q) {
         compute_kernel_hw_startup(cb_q_rm, cb_q_in);
         tilize_init(cb_q_rm, q_chunk_tiles, cb_q_in);
@@ -213,7 +223,9 @@ void kernel_main() {
     } else {
         mm_init(cb_q_in, cb_k_in, cb_qk_im);
     }
+    DPRINT << "C:Q cb_wait_front" << ENDL();
     cb_wait_front(cb_q_in, q_chunk_tiles);
+    DPRINT << "C:Q ready" << ENDL();
 
     // Define dynamic matmul configs
 #ifdef DYNAMIC_CHUNK_SIZE
@@ -224,6 +236,7 @@ void kernel_main() {
     const uint32_t out_in0_block_w_dynamic = Sk_chunk_t_dynamic;
     const uint32_t out_num_blocks_dynamic = 1;
     const uint32_t qk_chunk_tiles_dynamic = Sq_chunk_t * Sk_chunk_t_dynamic;
+    const uint32_t k_chunk_tiles_dynamic = Sk_chunk_t_dynamic * DHt;
 #else
     constexpr uint32_t qk_subblock_h_dynamic = qk_subblock_h;
     constexpr uint32_t qk_subblock_w_dynamic = qk_subblock_w;
@@ -305,9 +318,11 @@ void kernel_main() {
          */
         /* START OF FLASH ATTENTION LOOP */
         uint32_t cb_out_mm = cb_out_accumulate_im;
+        DPRINT << "C:FA loop head=" << cur_head_work << ENDL();
 
         // Loop through all K chunks
         for (uint32_t k_chunk = k_chunk_start; k_chunk < k_chunk_end; ++k_chunk) {
+            DPRINT << "C:K c=" << k_chunk << ENDL();
             // Reconfig register DF
             reconfig_data_format(cb_q_in, cb_k_in);
             pack_reconfig_data_format(cb_qk_im);
@@ -347,6 +362,7 @@ void kernel_main() {
                     mask_cb_to_use,
                     cb_zero_in);
 
+                DPRINT << "C:QK add mask" << ENDL();
                 /* QK += MASK */
                 if (!add_mask_fusion) {
                     if constexpr (is_causal) {
@@ -376,6 +392,7 @@ void kernel_main() {
                  * This gives us scaling for free on the performance-critical exp(x - max) computation.
                  */
 
+                DPRINT << "C:QK reduce max" << ENDL();
                 reconfig_data_format(cb_qk_im, cb_identity_scale_in);
                 pack_reconfig_data_format(cb_cur_max);
 
@@ -389,7 +406,7 @@ void kernel_main() {
                  */
                 reduce_c<PoolType::MAX, ReduceDim::REDUCE_ROW, cb_qk_im, cb_identity_scale_in, Sq_chunk_t, vector_mode>(
                     cb_cur_max, cb_prev_max, Sk_chunk_t_dynamic, k_chunk > k_chunk_start);
-
+                DPRINT << "C:QK red mx" << ENDL();
                 /* QK -= cb_cur_max */
                 /* QK = exp(QK)*/
                 reconfig_data_format(cb_qk_im, cb_cur_max);
@@ -401,6 +418,7 @@ void kernel_main() {
                 sub_exp_block_bcast_cols_inplace<cb_qk_im, Sq_chunk_t, scale_fp32, true, false, vector_mode>(
                     cb_cur_max, cb_cur_sum, Sk_chunk_t_dynamic);
                 cb_wait_front(cb_qk_im, qk_chunk_tiles_dynamic);
+                DPRINT << "C:QK sub exp`" << ENDL();
 
                 // Reconfig register DF
                 reconfig_data_format(cb_qk_im, cb_identity_scale_in);
@@ -413,6 +431,7 @@ void kernel_main() {
                 /* OUT_IM = QK @ V_CHUNK */
                 reconfig_data_format(cb_qk_im, cb_v_in);  // DEBUG
                 pack_reconfig_data_format(cb_out_im);
+                DPRINT << "C:v out matmul" << ENDL();
                 matmul_blocks(
                     cb_qk_im,
                     cb_v_in,
@@ -480,6 +499,7 @@ void kernel_main() {
         }
 
         /* END OF FLASH ATTENTION LOOP */
+        DPRINT << "C:FA done" << ENDL();
 
         /******************************************************************************
          *                      TREE REDUCTION LOGIC                                  *
@@ -501,11 +521,15 @@ void kernel_main() {
         //   - cb_prev_max: local M (max of logits)
         //   - cb_prev_sum: local L (sum of exp)
         // Only receive from children that actually have data
+        DPRINT << "C:tree nch=" << num_active_children << " rounds=" << num_active_rounds << " knc=" << k_num_chunks
+               << ENDL();
         if (num_active_children > 0) {
             // Iterate through each round and receive from child if one exists AND has data
             for (uint32_t round = 0; round < num_active_rounds; ++round) {
                 uint32_t child_id = active_children_per_round[round];
+                DPRINT << "C:round " << round << " child=" << child_id << ENDL();
                 if (child_id != UINT32_MAX) {
+                    DPRINT << "C:wait child " << child_id << ENDL();
                     // Writer kernel handles the semaphore wait and data transfer to cb_m_in, cb_l_in, cb_out_o
                     // Data arrives in order: l, m, o
 
@@ -554,6 +578,7 @@ void kernel_main() {
         }
 
         // Finalize output based on tree role
+        DPRINT << "C:finalize root=" << (uint32_t)is_tree_root << ENDL();
         if (is_tree_root) {
             // Root node: perform final normalization and output
             // Determine which sum/max buffer to use based on whether we did tree reduction
@@ -640,14 +665,18 @@ void kernel_main() {
             //   - cb_prev_max: M
 
             // Move O to output CB
+            DPRINT << "C:move o" << ENDL();
             move_block<true>(cb_out_accumulate_im, cb_out_o, out_chunk_tiles);
             // Move M to output CB
+            DPRINT << "C:move m" << ENDL();
             move_block<true>(cb_prev_max, cb_out_m, Sq_chunk_t);
             // Move L to output CB
+            DPRINT << "C:move l" << ENDL();
             move_block<true>(cb_prev_sum, cb_out_l, Sq_chunk_t);
         }
     }
 
     // Free up cb_q_in after Q chunks
     cb_pop_front(cb_q_in, q_chunk_tiles);
+    DPRINT << "C:end" << ENDL();
 }
