@@ -43,7 +43,7 @@ def get_padded_prefill_len(seq_len: int) -> int:
 
 
 def _should_skip_prefix_caching(
-    seq_len: int,  # Full sequence length including cached tokens
+    seq_len: int,  # Full sequence length: cached+new tokens
     num_cached: int,  # Number of cached tokens
 ) -> bool:
     """Decide whether prefix-caching overhead exceeds compute savings.
