@@ -353,7 +353,8 @@ bool reader_datacopy_writer(
             .consumer_risc_mask = 0x100,
             .num_consumers = 1,
             .cap = tt_metal::experimental::dfb::AccessPattern::STRIDED,
-            .enable_implicit_sync = false
+            .enable_implicit_sync = false,
+            .data_format = test_config.l1_input_data_format
         };
 
         tt_metal::experimental::dfb::DataflowBufferConfig l1_output_dfb_config = {
@@ -365,7 +366,8 @@ bool reader_datacopy_writer(
             .consumer_risc_mask = 0x2,
             .num_consumers = 1,
             .cap = tt_metal::experimental::dfb::AccessPattern::STRIDED,
-            .enable_implicit_sync = false
+            .enable_implicit_sync = false,
+            .data_format = test_config.l1_output_data_format
         };
 
         uint32_t l1_input_dfb = tt_metal::experimental::dfb::CreateDataflowBuffer(program_, test_config.core, l1_input_dfb_config);
@@ -483,10 +485,10 @@ TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyWriter) {
         .l1_output_data_format = tt::DataFormat::Float16_b,
         .core = CoreCoord(0, 0)};
     for (unsigned int id = 0; id < num_devices_; id++) {
-        // test_config.num_tiles = 1;
-        // ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
-        // test_config.num_tiles = 4;
-        // ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+        test_config.num_tiles = 1;
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+        test_config.num_tiles = 4;
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
         test_config.num_tiles = 8;
         ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
     }

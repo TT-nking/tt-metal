@@ -7,6 +7,8 @@
 #include "api/dataflow/dataflow_api.h"
 #ifdef ARCH_QUASAR
 #include "experimental/dataflow_buffer.h"
+#include "experimental/endpoints.h"
+#include "experimental/noc.h"
 #endif
 
 void kernel_main() {
@@ -19,6 +21,8 @@ void kernel_main() {
 
 #ifdef ARCH_QUASAR
     experimental::DataflowBuffer dfb(cb_id);
+    constexpr experimental::AllocatorBankType bank_type = experimental::AllocatorBankType::DRAM;
+    experimental::AllocatorBank<bank_type> src_dram;
     experimental::Noc noc;
 
     uint32_t ublock_size_bytes = dfb.get_entry_size();
@@ -26,10 +30,11 @@ void kernel_main() {
     for (uint32_t i = 0; i < num_tiles; i += ublock_size_tiles) {
         dfb.reserve_back(ublock_size_tiles);
 
-        // noc_async_read
+        noc.async_read(src_dram, dfb, ublock_size_bytes, {.bank_id = src_bank_id, .addr = src_addr}, {});
         noc.async_read_barrier();
 
         dfb.push_back(ublock_size_tiles);
+        src_addr += ublock_size_bytes;
     }
 
 #else

@@ -1468,6 +1468,8 @@ void detail::ProgramImpl::compile(IDevice* device, bool force_slow_dispatch) {
                     }
                     this->set_cb_data_fmt(kernel->logical_coreranges(), build_options);
                     this->set_cb_tile_dims(kernel->logical_coreranges(), build_options);
+                    this->set_dfb_data_fmt(kernel->logical_coreranges(), build_options);
+                    this->set_dfb_tile_dims(kernel->logical_coreranges(), build_options);
 
                     auto kernel_hash = KernelCompileHash(kernel, build_options, build_env.build_key());
 
