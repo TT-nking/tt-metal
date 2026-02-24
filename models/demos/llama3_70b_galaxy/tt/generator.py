@@ -598,6 +598,9 @@ class Generator(WarmupForwardMixin):
 
             # sampled_tokens has 32 entries ordered by slot.
             sampled_tensor = sampled_tokens[0, 0, 0, :]  # Shape: [32]
+            # Indexing on CPU requires a dtype that supports index_cpu (e.g. long); sampling may return uint32.
+            if sampled_tensor.dtype == torch.uint32:
+                sampled_tensor = sampled_tensor.to(torch.long)
             output_toks = sampled_tensor[empty_slots]
 
             if tt_log_probs is not None:
