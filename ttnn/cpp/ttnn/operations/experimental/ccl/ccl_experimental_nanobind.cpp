@@ -6,6 +6,7 @@
 
 #include <nanobind/nanobind.h>
 
+#include "ttnn/operations/experimental/ccl/copy_submesh_async/copy_submesh_async_generic_nanobind.hpp"
 #include "ttnn/operations/experimental/ccl/rms_allgather/rms_allgather_nanobind.hpp"
 #include "ttnn/operations/experimental/ccl/all_gather_matmul_async/all_gather_matmul_async_nanobind.hpp"
 #include "ttnn/operations/experimental/ccl/strided_all_gather_minimal_matmul_async/strided_all_gather_minimal_matmul_async_nanobind.hpp"
@@ -54,6 +55,7 @@ void py_module(nb::module_& mod) {
     ccl::bind_slice_reshard_async(mod);
     ccl::bind_deepseek_moe_reduce_scatter(mod);
     ccl::bind_all_to_all_dispatch_metadata(mod);
+    ccl::bind_copy_submesh_async_generic(mod);
 }
 
 }  // namespace ttnn::operations::experimental::ccl

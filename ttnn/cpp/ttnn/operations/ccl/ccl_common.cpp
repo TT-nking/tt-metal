@@ -8,10 +8,12 @@
 #include <cmath>
 
 #include "ccl_host_datastructures.hpp"
+#include "tt-metalium/mesh_coord.hpp"
 #include "ttnn/operations/data_movement/slice/slice.hpp"
 #include "ttnn/operations/data_movement/concat/concat.hpp"
 
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <vector>
 #include "tt-metalium/hal.hpp"
 #include "ttnn/types.hpp"
 #include "ttnn/distributed/types.hpp"
@@ -35,9 +37,11 @@ tt::tt_fabric::Topology convert_2d_to_1d_topology(tt::tt_fabric::Topology topolo
 }
 
 tt::tt_metal::distributed::MeshCoordinate::BoundaryMode get_boundary_mode(
-    const Tensor& tensor, tt::tt_fabric::Topology topology, std::optional<uint32_t> cluster_axis) {
-    auto mesh_shape = tensor.device()->shape();
-    auto device_coords = tensor.device_storage().coords;
+    const distributed::MeshDevice* mesh_device,
+    const std::vector<distributed::MeshCoordinate>& device_coords,
+    tt::tt_fabric::Topology topology,
+    std::optional<uint32_t> cluster_axis) {
+    auto mesh_shape = mesh_device->shape();
     TT_FATAL(!device_coords.empty(), "device_coords is empty");
     if (topology == tt::tt_fabric::Topology::Linear || topology == tt::tt_fabric::Topology::Mesh) {
         return tt::tt_metal::distributed::MeshCoordinate::BoundaryMode::NONE;
@@ -72,6 +76,11 @@ tt::tt_metal::distributed::MeshCoordinate::BoundaryMode get_boundary_mode(
     }
 
     return tt::tt_metal::distributed::MeshCoordinate::BoundaryMode::WRAP;
+}
+
+tt::tt_metal::distributed::MeshCoordinate::BoundaryMode get_boundary_mode(
+    const Tensor& tensor, tt::tt_fabric::Topology topology, std::optional<uint32_t> cluster_axis) {
+    return ::ttnn::ccl::get_boundary_mode(tensor.device(), tensor.device_storage().coords, topology, cluster_axis);
 }
 
 tt::tt_fabric::Topology get_usable_topology(
@@ -116,8 +125,9 @@ uint32_t get_topological_dimension(const Tensor& tensor, const std::optional<uin
 }
 
 uint32_t get_linearized_index_from_physical_coord(
-    const Tensor& tensor, const MeshCoordinate& physical_coord, const std::optional<uint32_t>& cluster_axis) {
-    const auto& device_coords = tensor.device_storage().coords;
+    const std::vector<tt::tt_metal::distributed::MeshCoordinate>& device_coords,
+    const tt::tt_metal::distributed::MeshCoordinate& physical_coord,
+    const std::optional<uint32_t>& cluster_axis) {
     TT_FATAL(!device_coords.empty(), "device_coords is empty");
     if (cluster_axis.has_value()) {
         log_debug(tt::LogOp, "Cluster axis has value {}", cluster_axis.value());
@@ -154,15 +164,29 @@ uint32_t get_linearized_index_from_physical_coord(
     return static_cast<uint32_t>(std::distance(device_coords.begin(), it));
 }
 
+uint32_t get_linearized_index_from_physical_coord(
+    const Tensor& tensor, const MeshCoordinate& physical_coord, const std::optional<uint32_t>& cluster_axis) {
+    return get_linearized_index_from_physical_coord(tensor.device_storage().coords, physical_coord, cluster_axis);
+}
 std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
     const Tensor& tensor,
     const MeshCoordinate& physical_coord,
     int offset,
     ttnn::ccl::Topology topology,
     const std::optional<uint32_t>& cluster_axis) {
-    const auto& device_coords = tensor.device_storage().coords;
+    return get_physical_neighbor_from_physical_coord(
+        tensor.device(), tensor.device_storage().coords, physical_coord, offset, topology, cluster_axis);
+}
+
+std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
+    const distributed::MeshDevice* mesh_device,
+    const std::vector<MeshCoordinate>& device_coords,
+    const MeshCoordinate& physical_coord,
+    int offset,
+    ttnn::ccl::Topology topology,
+    const std::optional<uint32_t>& cluster_axis) {
     TT_FATAL(!device_coords.empty(), "device_coords is empty");
-    auto boundary_mode = get_boundary_mode(tensor, topology, cluster_axis);
+    auto boundary_mode = get_boundary_mode(mesh_device, device_coords, topology, cluster_axis);
     if (cluster_axis.has_value()) {
         TT_FATAL(
             device_coords.at(0)[cluster_axis.value()] == 0,
@@ -177,7 +201,7 @@ std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
             physical_coord.dims());
         log_debug(tt::LogOp, "Boundary mode: {}", boundary_mode);
         auto potential_neighbor =
-            physical_coord.get_neighbor(tensor.device()->shape(), offset, cluster_axis.value(), boundary_mode);
+            physical_coord.get_neighbor(mesh_device->shape(), offset, cluster_axis.value(), boundary_mode);
         auto it = std::find(device_coords.begin(), device_coords.end(), potential_neighbor);
         if (it != device_coords.end()) {
             log_debug(
@@ -194,7 +218,8 @@ std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
             potential_neighbor);
         return std::nullopt;
     }
-    uint32_t physical_linearized_index = get_linearized_index_from_physical_coord(tensor, physical_coord, cluster_axis);
+    uint32_t physical_linearized_index =
+        get_linearized_index_from_physical_coord(device_coords, physical_coord, cluster_axis);
     int potential_neighbor_idx = (int)physical_linearized_index + offset;
     if (boundary_mode == tt::tt_metal::distributed::MeshCoordinate::BoundaryMode::WRAP) {
         potential_neighbor_idx = (potential_neighbor_idx + device_coords.size()) % device_coords.size();

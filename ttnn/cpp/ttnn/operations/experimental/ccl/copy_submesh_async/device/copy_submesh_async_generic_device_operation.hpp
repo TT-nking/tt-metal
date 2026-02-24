@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <variant>
 #include <optional>
 #include <vector>
@@ -41,13 +42,11 @@ namespace ttnn::prim {
 
 Tensor copy_submesh_async_generic(
     const ttnn::Tensor& input_tensor,
-    const std::optional<Tensor>& persistent_output_buffer,
-    int32_t in_dim,
-    int32_t out_dim,
+    const MeshDevice* output_mesh_device,
+    const MeshDevice* union_in_out_mesh_device,
+    uint32_t cluster_axis,
     uint32_t num_links,
-    const std::optional<MemoryConfig>& memory_config,
     ttnn::ccl::Topology topology,
-    std::optional<tt::tt_metal::SubDeviceId> sub_device_id,
-    std::optional<uint32_t> cluster_axis);
+    std::optional<tt::tt_metal::SubDeviceId> subdevice_id);
 
 }  // namespace ttnn::prim

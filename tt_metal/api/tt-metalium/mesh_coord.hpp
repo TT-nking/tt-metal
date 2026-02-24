@@ -67,6 +67,7 @@ public:
     explicit MeshCoordinate(uint32_t c);
     MeshCoordinate(uint32_t c0, uint32_t c1);
     MeshCoordinate(uint32_t c0, uint32_t c1, uint32_t c2);
+    MeshCoordinate(const MeshCoordinate& other) = default;
 
     // Constructs a generic N-dimensional coordinate.
     explicit MeshCoordinate(tt::stl::Span<const uint32_t> coords);

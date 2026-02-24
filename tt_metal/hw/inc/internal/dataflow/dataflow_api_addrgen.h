@@ -288,7 +288,9 @@ struct InterleavedAddrGen {
         uint32_t bank_index = interleaved_addr_gen::get_bank_index<DRAM>(id, bank_offset_index);
         uint32_t addr = this->get_addr(id, bank_offset_index, bank_index, offset);
         uint32_t noc_xy = interleaved_addr_gen::get_noc_xy<DRAM>(bank_index, noc);
-
+        // DPRINT << "bank_offset_index = " << bank_offset_index << ", bank_index = " << bank_index << ", addr = " <<
+        // addr
+        //        << ", noc_xy = " << noc_xy << ENDL();
         uint64_t noc_addr = get_noc_addr_helper(noc_xy, addr);
         return noc_addr;
     }

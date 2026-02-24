@@ -35,6 +35,17 @@ tt::tt_fabric::Topology convert_2d_to_1d_topology(tt::tt_fabric::Topology topolo
 uint32_t get_linearized_index_from_physical_coord(
     const Tensor& tensor, const MeshCoordinate& physical_coord, const std::optional<uint32_t>& cluster_axis);
 
+uint32_t get_linearized_index_from_physical_coord(
+    const std::vector<tt::tt_metal::distributed::MeshCoordinate>& device_coords, const tt::tt_metal::distributed::MeshCoordinate& physical_coord, const std::optional<uint32_t>& cluster_axis);
+
+std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
+    const distributed::MeshDevice* mesh_device,
+    const std::vector<MeshCoordinate>& device_coords,
+    const MeshCoordinate& physical_coord,
+    int offset,
+    ttnn::ccl::Topology topology,
+    const std::optional<uint32_t>& cluster_axis);
+
 std::optional<MeshCoordinate> get_physical_neighbor_from_physical_coord(
     const Tensor& tensor,
     const MeshCoordinate& physical_coord,
