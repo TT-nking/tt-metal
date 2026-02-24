@@ -16,7 +16,7 @@
  */
 inline void llk_wait_for_free_tiles(const std::int32_t dfb_id, const std::int32_t num_tiles) {
     experimental::LocalDFBInterface& local_dfb_interface = g_dfb_interface[dfb_id];
-    uint32_t tc_id = get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
+    uint32_t tc_id = experimental::get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
     TT_WAIT_FREE(ckernel::p_stall::STALL_PACK, num_tiles, tc_id);
 }
 
@@ -29,7 +29,7 @@ inline void llk_wait_for_free_tiles(const std::int32_t dfb_id, const std::int32_
 template <std::uint8_t PACK_SEL = 0x1>
 inline void llk_push_tiles(const std::int32_t dfb_id, const std::int32_t num_tiles) {
     experimental::LocalDFBInterface& local_dfb_interface = g_dfb_interface[dfb_id];
-    uint32_t tc_id = get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
+    uint32_t tc_id = experimental::get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
     // Update the tile counters values
     TT_PUSH_TILES(PACK_SEL, num_tiles, tc_id);
 

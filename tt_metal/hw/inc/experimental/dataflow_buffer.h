@@ -14,8 +14,13 @@
 #include "internal/tt-2xx/quasar/overlay/llk_intf_api.hpp"
 #include "experimental/noc.h"
 #else
-#include "api/compute/common_globals.h"
 #include "ckernel_trisc_common.h"
+#ifdef UCK_CHLKC_PACK
+#include "llk_io_pack.h"
+#endif
+#ifdef UCK_CHLKC_UNPACK
+#include "llk_io_unpack.h"
+#endif
 #endif
 
 #include "experimental/lock.h"
@@ -33,16 +38,16 @@ public:
         ASSERT(num_entries == 1);
         PackedTileCounter packed_tc = local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].packed_tile_counter;
         uint8_t tc_id = get_counter_id(packed_tc);
-#ifdef COMPILE_FOR_TRISC
+#if defined(COMPILE_FOR_TRISC) && defined(UCK_CHLKC_PACK)
         // PACK({DPRINT << "reserve_back: tc_id: " << static_cast<uint32_t>(tc_id) << " capacity: " << static_cast<uint32_t>(tile_counters[tc_id].f.buf_capacity) << ENDL();})
-        PACK((llk_wait_for_free_tiles(logical_dfb_id_, num_entries)));
+        llk_wait_for_free_tiles(logical_dfb_id_, num_entries);
         // PACK({
         //     uint16_t entries_freed;
         //     do {
         //         entries_freed = tile_counters[tc_id].f.acked;
         //     } while (entries_freed < num_entries);
         // })
-#else
+#elif !defined(COMPILE_FOR_TRISC)
         uint8_t tensix_id = get_tensix_id(packed_tc);
         while (llk_intf_get_free_space(tensix_id, tc_id) < num_entries);
 #endif
@@ -52,9 +57,9 @@ public:
         ASSERT(num_entries == 1);
         PackedTileCounter packed_tc = local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].packed_tile_counter;
         uint8_t tc_id = get_counter_id(packed_tc);
-#ifdef COMPILE_FOR_TRISC
+#if defined(COMPILE_FOR_TRISC) && defined(UCK_CHLKC_PACK)
         // PACK({DPRINT << "push_bak: tc_id: " << static_cast<uint32_t>(tc_id) << " posted: " << static_cast<uint32_t>(tile_counters[tc_id].f.posted) << ENDL();})
-        PACK((llk_push_tiles(logical_dfb_id_, num_entries)));
+        llk_push_tiles(logical_dfb_id_, num_entries);
         // PACK({
         //     tile_counters[tc_id].f.posted = num_entries;
         //     local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].wr_ptr += (num_entries * local_dfb_interface_.stride_size);
@@ -65,7 +70,7 @@ public:
         //     local_dfb_interface_.tc_idx = (local_dfb_interface_.tc_idx + 1) % local_dfb_interface_.num_tcs_to_rr;
         //     // DPRINT << "push_back: updated counter_idx: " << (uint32_t)local_dfb_interface_.tc_idx << ENDL();
         // })
-#else
+#elif !defined(COMPILE_FOR_TRISC)
         uint8_t tensix_id = get_tensix_id(packed_tc);
         llk_intf_inc_posted(tensix_id, tc_id, num_entries);
         // DPRINT << "push_back: tensix_id: " << static_cast<uint32_t>(tensix_id) << " tc_id: " << static_cast<uint32_t>(tc_id) << " capacity: "
@@ -85,9 +90,9 @@ public:
         ASSERT(num_entries == 1);
         PackedTileCounter packed_tc = local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].packed_tile_counter;
         uint8_t tc_id = get_counter_id(packed_tc);
-#ifdef COMPILE_FOR_TRISC
+#if defined(COMPILE_FOR_TRISC) && defined(UCK_CHLKC_UNPACK)
         // UNPACK({DPRINT << "wait_front: tc_id: " << static_cast<uint32_t>(tc_id) << " capacity: " << static_cast<uint32_t>(tile_counters[tc_id].f.buf_capacity) << ENDL();})
-        UNPACK((llk_wait_tiles(logical_dfb_id_, num_entries)));
+        llk_wait_tiles(logical_dfb_id_, num_entries);
 
         // UNPACK({
         //     uint16_t entries_received;
@@ -95,7 +100,7 @@ public:
         //         entries_received = tile_counters[tc_id].f.posted;
         //     } while (entries_received < num_entries);
         // })
-#else
+#elif !defined(COMPILE_FOR_TRISC)
         uint8_t tensix_id = get_tensix_id(packed_tc);
         // DPRINT << "wait_front: tensix_id: " << static_cast<uint32_t>(tensix_id)
         //        << " capacity: " << static_cast<uint32_t>(llk_intf_get_capacity(tensix_id, tc_id))
@@ -109,8 +114,8 @@ public:
         ASSERT(num_entries == 1);
         PackedTileCounter packed_tc = local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].packed_tile_counter;
         uint8_t tc_id = get_counter_id(packed_tc);
-#ifdef COMPILE_FOR_TRISC
-        UNPACK((llk_pop_tiles(logical_dfb_id_, num_entries)));
+#if defined(COMPILE_FOR_TRISC) && defined(UCK_CHLKC_UNPACK)
+        llk_pop_tiles(logical_dfb_id_, num_entries);
         // UNPACK({
         //     tile_counters[tc_id].f.acked = num_entries;
         //     local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].rd_ptr += (num_entries * local_dfb_interface_.stride_size);
@@ -120,7 +125,7 @@ public:
         //     local_dfb_interface_.tc_idx = (local_dfb_interface_.tc_idx + 1) % local_dfb_interface_.num_tcs_to_rr;
         //     // DPRINT << "pop_front: updated counter_idx: " << (uint32_t)local_dfb_interface_.tc_idx << ENDL();
         // })
-#else
+#elif !defined(COMPILE_FOR_TRISC)
         uint8_t tensix_id = get_tensix_id(packed_tc);
         llk_intf_inc_acked(tensix_id, tc_id, num_entries);
         local_dfb_interface_.tc_slots[local_dfb_interface_.tc_idx].rd_ptr += (num_entries * local_dfb_interface_.stride_size);
@@ -149,9 +154,9 @@ public:
             for (uint8_t i = 0; i < local_dfb_interface_.num_tcs_to_rr; i++) {
                 PackedTileCounter packed_tc = local_dfb_interface_.tc_slots[i].packed_tile_counter;
                 uint8_t tc_id = get_counter_id(packed_tc);
-#ifdef COMPILE_FOR_TRISC
-                UNPACK({ all_acked = all_acked && (tile_counters[tc_id].f.posted == 0); })
-#else
+#if defined(COMPILE_FOR_TRISC) && defined(UCK_CHLKC_UNPACK)
+                all_acked = all_acked && (tile_counters[tc_id].f.posted == 0);
+#elif !defined(COMPILE_FOR_TRISC)
                 uint8_t tensix_id = get_tensix_id(packed_tc);
                 all_acked &=
                     (fast_llk_intf_read_acked(tensix_id, tc_id) == fast_llk_intf_read_posted(tensix_id, tc_id));

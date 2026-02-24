@@ -16,7 +16,7 @@
  */
 inline void llk_wait_tiles(const std::int32_t dfb_id, const std::uint32_t num_tiles) {
     experimental::LocalDFBInterface& local_dfb_interface = g_dfb_interface[dfb_id];
-    uint32_t tc_id = get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
+    uint32_t tc_id = experimental::get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
     TT_WAIT_TILES(ckernel::p_stall::STALL_UNPACK, num_tiles, tc_id);
 }
 
@@ -28,7 +28,7 @@ inline void llk_wait_tiles(const std::int32_t dfb_id, const std::uint32_t num_ti
 template <std::uint8_t UNPACK_SEL = 0x3>
 inline void llk_pop_tiles(const std::int32_t dfb_id, const std::int32_t num_tiles) {
     experimental::LocalDFBInterface& local_dfb_interface = g_dfb_interface[dfb_id];
-    uint32_t tc_id = get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
+    uint32_t tc_id = experimental::get_counter_id(local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].packed_tile_counter);
 
     // Wait until selected unpackers are reading from L1
     TT_POP_TILES(UNPACK_SEL, num_tiles, tc_id);
