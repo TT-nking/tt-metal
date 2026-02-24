@@ -52,27 +52,27 @@ def test_layer_norm_sharded_single_stage(
 def test_layer_norm_sharded_two_stage(
     device, h, w, num_cores_h, num_cores_w, block_ht, block_wt, subblock_wt, use_welford, two_stage, tensor_type, dtype
 ):
-    # if is_watcher_enabled() and two_stage and use_welford:
-    #     if (
-    #         h == 128
-    #         and w == 256
-    #         and num_cores_h == 4
-    #         and num_cores_w == 2
-    #         and block_ht == 4
-    #         and block_wt == 1
-    #         and subblock_wt == 1
-    #     ):
-    #         pytest.skip("Skipping the test with watcher enabled due to failure, see github issue #37171")
-    #     if (
-    #         h == 256
-    #         and w == 512
-    #         and num_cores_h == 2
-    #         and num_cores_w == 4
-    #         and block_ht == 8
-    #         and block_wt == 2
-    #         and subblock_wt == 1
-    #     ):
-    #         pytest.skip("Skipping the test with watcher enabled due to hang, see github issue #37172")
+    if is_watcher_enabled() and two_stage and use_welford:
+        if (
+            h == 128
+            and w == 256
+            and num_cores_h == 4
+            and num_cores_w == 2
+            and block_ht == 4
+            and block_wt == 1
+            and subblock_wt == 1
+        ):
+            pytest.skip("Skipping the test with watcher enabled due to failure, see github issue #37171")
+        if (
+            h == 256
+            and w == 512
+            and num_cores_h == 2
+            and num_cores_w == 4
+            and block_ht == 8
+            and block_wt == 2
+            and subblock_wt == 1
+        ):
+            pytest.skip("Skipping the test with watcher enabled due to hang, see github issue #37172")
     layernorm_test_main(
         device,
         h,

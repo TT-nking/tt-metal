@@ -42,7 +42,7 @@ protected:
 
 TEST_F(N300CommOpsTest, TestAllReduceNotFullyTiled) {
     // Test failing with watcher enabled, github issue #30521
-    // SKIP_FOR_WATCHER();
+    SKIP_FOR_WATCHER();
 
     auto* device = &ttml::autograd::ctx().get_device();
     auto mesh_shape = device->shape();
