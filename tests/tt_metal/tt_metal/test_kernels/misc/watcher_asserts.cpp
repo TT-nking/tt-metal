@@ -24,6 +24,7 @@ void kernel_main() {
     constexpr uint32_t dm_id = get_compile_time_arg_val(0);
     uint64_t cpu_index = 0;
     asm volatile("csrr %0, mhartid" : "=r"(cpu_index));
+    // On Quasar since all 8 kernels are launched: execute only the processor matching dm_id ; skip others
     if(dm_id != cpu_index)
         return;
 #endif
@@ -31,7 +32,7 @@ void kernel_main() {
 #if (defined(UCK_CHLKC_UNPACK) and defined(TRISC0)) or \
     (defined(UCK_CHLKC_MATH) and defined(TRISC1)) or \
     (defined(UCK_CHLKC_PACK) and defined(TRISC2)) or \
-    (defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_ERISC) || defined(COMPILE_FOR_DM))
+    (defined(COMPILE_FOR_BRISC) or defined(COMPILE_FOR_NCRISC) or defined(COMPILE_FOR_ERISC) or defined(COMPILE_FOR_DM))
     WATCHER_RING_BUFFER_PUSH(a);
     WATCHER_RING_BUFFER_PUSH(b);
 #if defined(COMPILE_FOR_BRISC) or defined(COMPILE_FOR_NCRISC) or defined(COMPILE_FOR_ERISC) or defined(COMPILE_FOR_DM)

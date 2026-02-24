@@ -107,6 +107,7 @@ static void RunTest(
                         logical_core,
                         ComputeConfig{.defines = {{fmt::format("TRISC{}", processor.processor_type), "1"}}});
                     break;
+                default: TT_THROW("Unsupported processor class type for TENSIX");
             }
             break;
         case HalProgrammableCoreType::ACTIVE_ETH:
@@ -125,6 +126,8 @@ static void RunTest(
                 eth_config.eth_mode = Eth::IDLE;
             }
             assert_kernel = CreateKernel(program_, kernel, logical_core, eth_config);
+            // TODO: replace string literal "erisc" with hal.get_processor_class_name() after
+            // unifying all tests + watcher_device_reader::get_riscv_name() with same method
             risc = "erisc";
             break;
         }
